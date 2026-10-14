@@ -41,8 +41,63 @@ pub fn char_width(c: char) -> usize {
     }
 }
 
-pub fn display_width(s: &str) -> usize {
-    s.chars().map(char_width).sum()
+/// The width of text as it appears on screen.
+///
+/// Styling escapes are skipped rather than counted: measuring them as cells is
+/// how a clipped line loses its closing reset.
+pub fn visible_width(text: &str) -> usize {
+    filter_visible(text, |_, _| true).1
+}
+
+/// Walk a string, copying SGR escape sequences through untouched and handing
+/// the visible characters to `keep`, which receives the cells used so far and
+/// this character's width. Returns what was kept, its width, and whether
+/// anything was dropped.
+fn filter_visible(text: &str, mut keep: impl FnMut(usize, usize) -> bool) -> (String, usize, bool) {
+    let mut out = String::with_capacity(text.len());
+    let mut used = 0usize;
+    let mut truncated = false;
+    let mut chars = text.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            out.push(c);
+            if chars.peek() == Some(&'[') {
+                out.push(chars.next().expect("peeked"));
+                // ... up to and including the final byte of the sequence
+                for n in chars.by_ref() {
+                    out.push(n);
+                    if n.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else if let Some(n) = chars.next() {
+                out.push(n);
+            }
+            continue;
+        }
+        if !keep(used, char_width(c)) {
+            truncated = true;
+            break;
+        }
+        used += char_width(c);
+        out.push(c);
+    }
+    (out, used, truncated)
+}
+
+/// Clip text to a number of terminal cells, keeping escapes intact and never
+/// ending on an unclosed style.
+pub fn clip(text: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let (out, _, truncated) = filter_visible(text, |used, w| used + w <= max);
+    if truncated && out.contains('\u{1b}') {
+        format!("{out}\u{1b}[0m")
+    } else {
+        out
+    }
 }
 
 fn chars_width(chars: &[char]) -> usize {
@@ -246,7 +301,7 @@ mod tests {
             vec!["the quick", "brown fox", "jumps over", "the lazy", "dog"]
         );
         for piece in &pieces {
-            assert!(display_width(piece) <= 10, "{piece:?} is too wide");
+            assert!(visible_width(piece) <= 10, "{piece:?} is too wide");
         }
         // Nothing is lost but the spaces that landed on a break.
         assert_eq!(pieces.join(" "), line);
@@ -294,11 +349,49 @@ mod tests {
     fn measures_wide_characters() {
         // Three two-cell glyphs are six cells wide.
         let line = "日本語";
-        assert_eq!(display_width(line), 6);
+        assert_eq!(visible_width(line), 6);
         assert_eq!(text(line, &wrap_line(line, 6)), vec!["日本語"]);
         assert_eq!(text(line, &wrap_line(line, 4)), vec!["日本", "語"]);
         assert_eq!(expand_tabs("a\tb"), "a    b");
         assert_eq!(char_width('\t'), 4);
+    }
+
+    #[test]
+    fn measures_and_clips_styled_text_without_counting_escapes() {
+        assert_eq!(visible_width("plain"), 5);
+        assert_eq!(visible_width("\u{1b}[7mabc\u{1b}[0m"), 3);
+        assert_eq!(visible_width("\u{1b}[1;30;43mhello\u{1b}[0m"), 5);
+        assert_eq!(visible_width("日本"), 4);
+
+        // Clipping a styled string must not eat the closing reset, or the
+        // terminal stays wearing that style into the next frame.
+        let styled = "\u{1b}[7mhello world\u{1b}[0m";
+        let clipped = clip(styled, 5);
+        assert_eq!(visible_width(&clipped), 5);
+        assert!(
+            clipped.ends_with("\u{1b}[0m"),
+            "clipping must close the style: {clipped:?}"
+        );
+        assert!(clipped.starts_with("\u{1b}[7m"));
+
+        // A styled string that already fits is returned untouched.
+        let fits = "\u{1b}[36mok\u{1b}[0m";
+        assert_eq!(clip(fits, 10), fits);
+
+        // Escape sequences are neither split in half nor counted.
+        let clipped = clip("\u{1b}[36m─────\u{1b}[0m", 2);
+        assert_eq!(visible_width(&clipped), 2);
+        let escapes: Vec<&str> = clipped
+            .match_indices('\u{1b}')
+            .map(|(i, _)| &clipped[i..])
+            .collect();
+        assert_eq!(
+            escapes.len(),
+            2,
+            "expected the style and its close: {escapes:?}"
+        );
+        assert!(escapes[0].starts_with("\u{1b}[36m"), "colour kept whole");
+        assert!(escapes[1].starts_with("\u{1b}[0m"), "style closed");
     }
 
     #[test]

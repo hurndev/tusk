@@ -451,7 +451,7 @@ mod tests {
         // heading, 3 body rows for the wrapped first entry, blank, heading, body
         for visual in &visuals {
             assert!(
-                text::display_width(&visual.text) <= 20,
+                text::visible_width(&visual.text) <= 20,
                 "{:?} is too wide",
                 visual.text
             );

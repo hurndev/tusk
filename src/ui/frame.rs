@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
-use crossterm::style::Print;
+use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
     enable_raw_mode,
@@ -19,7 +19,7 @@ use crossterm::terminal::{
 use crossterm::{execute, queue};
 
 use crate::style::Paint;
-use crate::text::{self, display_width};
+use crate::text;
 /// How wide a prose block should be, and where it starts on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prose {
@@ -142,6 +142,10 @@ impl Frame {
     }
 
     pub fn flush(mut self) -> io::Result<()> {
+        // Nothing may leak out of a frame: reset before anything else is
+        // written, so the next frame's screen erase cannot inherit a live
+        // attribute and paint the background.
+        let _ = queue!(self.buffer, SetAttribute(Attribute::Reset));
         // The cursor is hidden unless a frame asks for it, so the editor and
         // reader only show one while typing.
         match self.cursor {
@@ -160,33 +164,23 @@ impl Frame {
 
 /// Pad plain text with spaces to fill a width, for status bars and headings.
 pub fn pad(text: &str, width: usize) -> String {
-    let visible = display_width(text);
+    let visible = text::visible_width(text);
     if visible >= width {
         return clip(text, width);
     }
     format!("{text}{}", " ".repeat(width - visible))
 }
 
-/// Clip a string to a number of terminal cells, ignoring nothing: the caller
-/// passes plain text, and styling is applied afterwards.
+/// Clip a string to a number of terminal cells.
+///
+/// Escape sequences are copied through, never counted as cells and never cut
+/// in half, so a truncated line still ends with its reset and cannot leave the
+/// terminal wearing somebody else's colours.
 pub fn clip(text: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
-    if display_width(text) <= max {
-        return text.to_string();
-    }
-    let mut out = String::new();
-    let mut used = 0usize;
-    for c in text.chars() {
-        let w = text::char_width(c);
-        if used + w > max {
-            break;
-        }
-        used += w;
-        out.push(c);
-    }
-    out
+    text::clip(text, max)
 }
 
 /// A transient status message with an expiry, used for "saved" confirmations.
