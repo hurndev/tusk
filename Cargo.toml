@@ -1,0 +1,31 @@
+[package]
+name = "tusk"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A small, sharp CLI journal for plain prose, with its own editor and reader"
+license = "GPL-3.0-only"
+repository = "https://github.com/hurndev/tusk"
+readme = "README.md"
+keywords = ["journal", "cli", "diary", "notes", "jrnl"]
+categories = ["command-line-utilities"]
+exclude = ["/.github"]
+
+[[bin]]
+name = "tusk"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive", "wrap_help"] }
+crossterm = "0.29.0"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+unicode-width = "0.2.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
