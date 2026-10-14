@@ -14,7 +14,7 @@ use crate::text;
 /// What a line of the document is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// An entry divider, carrying a label such as "2026-10-14 13:43 · entry 3".
+    /// An entry divider, carrying a label such as "2026-06-09 11:20 · entry 3".
     Heading,
     /// Prose from an entry.
     Body,

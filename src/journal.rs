@@ -13,7 +13,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use regex::Regex;
 
-/// The timestamp format tusk writes: `2026-10-14 01:43:09 PM` (jrnl's `%F %r`).
+/// The timestamp format tusk writes: `2026-06-09 11:20:15 AM` (jrnl's `%F %r`).
 pub const STAMP: &str = "%Y-%m-%d %I:%M:%S %p";
 
 /// A short format used for listings.
@@ -392,7 +392,7 @@ pub fn resolve(entries: &[Entry], spec: &str) -> Result<Vec<usize>> {
         return Ok(vec![total - n]);
     }
 
-    // A full timestamp prefix, e.g. "2026-10-14 13:43".
+    // A full timestamp prefix, e.g. "2026-06-09 11:20".
     let stamp = spec
         .replace('T', " ")
         .split_whitespace()
@@ -444,7 +444,7 @@ pub fn looks_like_header(body: &str) -> bool {
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = "[2024-08-27 12:00:00 AM] The kettle broke this morning.\nIt took twenty minutes to sort out.\n\n[2024-08-28 10:30:00 PM] A quiet day.\n\nSecond paragraph.\n";
+    const SAMPLE: &str = "[2024-03-04 09:15:00 AM] The kettle broke this morning.\nIt took twenty minutes to sort out.\n\n[2024-03-05 08:05:00 PM] A quiet day.\n\nSecond paragraph.\n";
 
     #[test]
     fn parses_entries_with_offsets() {
@@ -456,18 +456,18 @@ mod tests {
             "The kettle broke this morning.\nIt took twenty minutes to sort out."
         );
         assert_eq!(entries[1].body, "A quiet day.\n\nSecond paragraph.");
-        assert_eq!(entries[1].date.to_string(), "2024-08-28 22:30:00");
+        assert_eq!(entries[1].date.to_string(), "2024-03-05 20:05:00");
 
         // Offsets must slice the original file exactly.
         let first = &SAMPLE[entries[0].start..entries[0].end];
         assert_eq!(
             first,
-            "[2024-08-27 12:00:00 AM] The kettle broke this morning.\nIt took twenty minutes to sort out."
+            "[2024-03-04 09:15:00 AM] The kettle broke this morning.\nIt took twenty minutes to sort out."
         );
         let second = &SAMPLE[entries[1].start..entries[1].end];
         assert_eq!(
             second,
-            "[2024-08-28 10:30:00 PM] A quiet day.\n\nSecond paragraph."
+            "[2024-03-05 08:05:00 PM] A quiet day.\n\nSecond paragraph."
         );
     }
 
@@ -511,11 +511,11 @@ mod tests {
             content: SAMPLE.to_string(),
             entries: parse(SAMPLE),
         };
-        let when = parse_stamp("2026-10-14 01:43:09 PM").unwrap();
+        let when = parse_stamp("2026-06-09 11:20:15 AM").unwrap();
         journal.append(when, "A new thought.\nSecond line.");
         assert_eq!(journal.entries.len(), 3);
         assert_eq!(journal.entries[2].body, "A new thought.\nSecond line.");
-        assert_eq!(journal.entries[2].date.to_string(), "2026-10-14 13:43:09");
+        assert_eq!(journal.entries[2].date.to_string(), "2026-06-09 11:20:15");
         assert!(journal.content.ends_with("Second line.\n"));
         // The parse of the rewritten text must match the in-memory entries.
         assert_eq!(parse(&journal.content).len(), 3);
@@ -528,12 +528,12 @@ mod tests {
             content: SAMPLE.to_string(),
             entries: parse(SAMPLE),
         };
-        let when = parse_stamp("2024-08-27 12:00:00 AM").unwrap();
+        let when = parse_stamp("2024-03-04 09:15:00 AM").unwrap();
         journal.replace(0, when, "Edited first.");
         assert!(
             journal
                 .content
-                .starts_with("[2024-08-27 12:00:00 AM] Edited first.\n\n[2024-08-28")
+                .starts_with("[2024-03-04 09:15:00 AM] Edited first.\n\n[2024-03-05")
         );
         assert_eq!(journal.entries.len(), 2);
 
@@ -543,7 +543,7 @@ mod tests {
         assert!(
             journal
                 .content
-                .starts_with("[2024-08-28 10:30:00 PM] A quiet day.")
+                .starts_with("[2024-03-05 08:05:00 PM] A quiet day.")
         );
         assert!(!journal.content.contains("\n\n\n"));
     }
@@ -555,9 +555,9 @@ mod tests {
         assert_eq!(resolve(&entries, "2").unwrap(), vec![0]);
         assert_eq!(resolve(&entries, "latest").unwrap(), vec![1]);
         assert_eq!(resolve(&entries, "oldest").unwrap(), vec![0]);
-        assert_eq!(resolve(&entries, "2024-08-27").unwrap(), vec![0]);
-        assert_eq!(resolve(&entries, "2024-08").unwrap(), vec![0, 1]);
-        assert_eq!(resolve(&entries, "2024-08-28 10:30").unwrap(), vec![1]);
+        assert_eq!(resolve(&entries, "2024-03-04").unwrap(), vec![0]);
+        assert_eq!(resolve(&entries, "2024-03").unwrap(), vec![0, 1]);
+        assert_eq!(resolve(&entries, "2024-03-05 20:05").unwrap(), vec![1]);
         assert!(resolve(&entries, "3").is_err());
         assert!(resolve(&entries, "0").is_err());
         assert!(resolve(&entries, "1999").is_err());
@@ -565,10 +565,10 @@ mod tests {
 
     #[test]
     fn parses_jrnl_meridiem_variants() {
-        assert!(parse_stamp("2026-10-14 01:43:09 PM").is_some());
-        assert!(parse_stamp("2026-10-14 1:43 pm").is_some());
-        assert!(parse_stamp("2026-10-14 13:43").is_some());
-        assert!(parse_stamp("2026-10-14T13:43:09").is_some());
+        assert!(parse_stamp("2026-06-09 11:20:15 AM").is_some());
+        assert!(parse_stamp("2026-06-09 11:20 am").is_some());
+        assert!(parse_stamp("2026-06-09 11:20").is_some());
+        assert!(parse_stamp("2026-06-09T11:20:15").is_some());
         assert!(parse_stamp("nonsense").is_none());
     }
 }

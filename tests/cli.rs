@@ -128,17 +128,17 @@ fn writes_entries_in_jrnl_format() {
 fn reads_back_existing_jrnl_files() {
     let sandbox = Sandbox::new("existing");
     let legacy = "\
-[2024-08-27 12:00:00 AM] The kettle broke this morning.
+[2024-03-04 09:15:00 AM] The kettle broke this morning.
 It took twenty minutes to sort out.
 
-[2024-08-28 12:00:00 AM] A quiet day.
+[2024-03-05 12:00:00 AM] A quiet day.
 
 Second paragraph.
 ";
     fs::write(&sandbox.journal, legacy).unwrap();
 
     let listing = sandbox.ok(&["list"]);
-    contains(&listing, "2024-08-28 00:00");
+    contains(&listing, "2024-03-05 00:00");
     contains(&listing, "2 entries");
 
     let shown = sandbox.ok(&["show", "2"]);
