@@ -67,6 +67,13 @@ impl Paint {
         self.wrap("7", s)
     }
 
+    /// A full-width message bar. One SGR pair for the whole string, so the
+    /// padding is included in the bar rather than left behind by an inner
+    /// reset.
+    pub fn bar(&self, s: &str, attention: bool) -> String {
+        self.wrap(if attention { "7;1;31" } else { "7;32" }, s)
+    }
+
     pub fn ok(&self, s: &str) -> String {
         self.wrap("32", s)
     }

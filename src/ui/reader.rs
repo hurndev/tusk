@@ -185,14 +185,15 @@ pub fn run(doc: &Doc, options: &ReaderOptions, paint: &Paint) -> Result<Action> 
                 )
             };
             let footer = frame::pad(&footer, cols);
-            frame.put(0, rows.saturating_sub(1), &paint.reverse(&footer));
-
-            if let Some(flash) = &flash {
-                frame.put(
-                    0,
-                    rows.saturating_sub(2),
-                    &paint.reverse(&frame::pad(&flash.render(paint), cols.min(60))),
-                );
+            let footer_row = rows.saturating_sub(1);
+            // A transient message takes the footer's place rather than
+            // covering a line of your writing.
+            match &flash {
+                Some(flash) => {
+                    let bar = frame::pad(flash.plain(), cols);
+                    frame.put(0, footer_row, &paint.bar(&bar, flash.is_error()));
+                }
+                None => frame.put(0, footer_row, &paint.reverse(&footer)),
             }
 
             if help {

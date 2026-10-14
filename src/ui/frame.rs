@@ -218,6 +218,15 @@ impl Flash {
         Instant::now() > self.until
     }
 
+    /// The message as plain text, for callers that style the whole line.
+    pub fn plain(&self) -> &str {
+        &self.text
+    }
+
+    pub fn is_error(&self) -> bool {
+        self.error
+    }
+
     pub fn render(&self, paint: &Paint) -> String {
         if self.error {
             paint.warn(&self.text)
