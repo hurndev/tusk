@@ -212,9 +212,9 @@ impl Dictionary {
         let Some(base) = base else {
             let tag = requested.unwrap_or_else(|| "en_GB".to_string());
             return Status::Disabled(format!(
-                "no {tag} dictionary found — install one (Arch: \
-                 sudo pacman -S hunspell-en_gb, Debian: hunspell-en-gb), or point \
-                 `dictionary` at a word list"
+                "no {tag} dictionary found — install a word list (Arch: \
+                 sudo pacman -S words, Debian: sudo apt install wbritish), or point \
+                 `dictionary` at one"
             ));
         };
 
@@ -451,6 +451,8 @@ fn undouble(stem: &str) -> Option<String> {
 /// Read a word list: either a hunspell `.dic` (flags after `/` are dropped, and
 /// entries marked with `-`/`+` are skipped) or one word per line.
 fn load_words(text: &str, hunspell: bool, into: &mut HashSet<Box<str>>) {
+    // A few lists begin with a byte order mark.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.lines();
     if hunspell {
         lines.next(); // the leading count
@@ -498,11 +500,15 @@ fn find_tagged(tag: &str) -> Option<PathBuf> {
     }
     names.push(dashed.to_lowercase());
     names.push(underscored.to_lowercase());
+    // hunspell ships a "large" variant; some distros use it.
+    for name in names.clone() {
+        names.push(format!("{name}-large"));
+    }
 
     // Plain word lists are named after the dialect instead.
     let mut lists: Vec<&str> = Vec::new();
     match tag.replace('-', "_").to_lowercase().as_str() {
-        "en_gb" | "en_uk" => lists.extend(["british-english", "english", "words"]),
+        "en_gb" | "en_uk" => lists.extend(["british-english", "british", "english", "words"]),
         "en_us" | "en" => lists.extend(["american-english", "english", "words"]),
         _ => lists.extend(["english", "words"]),
     }
@@ -514,24 +520,35 @@ fn find_tagged(tag: &str) -> Option<PathBuf> {
         PathBuf::from("/usr/local/share/hunspell"),
         PathBuf::from("/usr/share/dict"),
         PathBuf::from("/usr/local/share/dict"),
+        // macOS keeps hunspell dictionaries here.
+        PathBuf::from("/Library/Spelling"),
     ];
     if let Ok(home) = crate::config::home_dir() {
         dirs.push(home.join(".local/share/hunspell"));
         dirs.push(home.join(".hunspell"));
+        dirs.push(home.join("Library/Spelling"));
     }
     if let Ok(dir) = crate::config::config_dir() {
         dirs.push(dir);
     }
 
+    // Plain, fully expanded word lists come first: they need no affix rules,
+    // so nothing a real dictionary knows is missing from them. `british-english`
+    // from the `words` package is the best dictionary to point tusk at.
     for dir in &dirs {
-        for name in &names {
-            let candidate = dir.join(format!("{name}.dic"));
+        for name in &lists {
+            let candidate = dir.join(name);
             if candidate.is_file() {
                 return Some(candidate);
             }
         }
-        for name in &lists {
-            let candidate = dir.join(name);
+    }
+    // Then hunspell dictionaries. Their `.aff` rules are not read, so a few
+    // words built purely from those rules (`every`, `many`, `has`) can be
+    // underlined; the suffix rules above cover most such cases.
+    for dir in &dirs {
+        for name in &names {
+            let candidate = dir.join(format!("{name}.dic"));
             if candidate.is_file() {
                 return Some(candidate);
             }
@@ -656,6 +673,17 @@ mod tests {
         assert!(set.contains("don't"));
         assert!(!set.contains("forbidden"));
         assert!(!set.contains("3"));
+    }
+
+    #[test]
+    fn tolerates_a_byte_order_mark() {
+        let mut set = HashSet::new();
+        load_words("\u{feff}kettle\ncolour\n", false, &mut set);
+        assert!(
+            set.contains("kettle"),
+            "the BOM must not become part of a word"
+        );
+        assert_eq!(set.len(), 2);
     }
 
     #[test]

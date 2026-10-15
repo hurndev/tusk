@@ -130,14 +130,27 @@ tusk config set dictionary ~/words.txt    # or point at any word list
 TUSK_DICTIONARY=en_US tusk new            # or override it for one run
 ```
 
-`dictionary` takes either a language tag or a path. For a tag, tusk looks in the
-usual places (`/usr/share/hunspell/en_GB.dic`, `/usr/share/myspell`, `/usr/share/dict/british-english`, and
-the equivalents under `~/.local` and `~/.config/tusk`). Any of these work — one
-word per line, or a hunspell `.dic` (flags are ignored):
+`dictionary` takes either a language tag or a path. With a tag, tusk looks in
+the usual places — `/usr/share/dict/british-english`, `/usr/share/hunspell/en_GB.dic`,
+`/usr/share/myspell`, and the equivalents under `~/.local` and `~/.config/tusk`:
 
 ```sh
-sudo pacman -S hunspell-en_gb        # Arch
-sudo apt install hunspell-en-gb      # Debian, Ubuntu
+sudo pacman -S words                 # Arch          → /usr/share/dict/british-english
+sudo apt install wbritish            # Debian, Ubuntu
+```
+
+Prefer a **plain word list** such as `british-english`: it is fully inflected, so
+nothing a dictionary would know is missing from it. A hunspell `.dic` works too
+(its flags are ignored), but tusk does not read the companion `.aff` rules, and
+some words are built only from those — a few like `every`, `many` and `has` can
+end up underlined. `F3` deals with those, or install a plain list instead. On a
+24,735-word journal, `british-english` flags 0.7% of words, and most of those are
+names.
+
+Either format works from any path:
+
+```sh
+tusk config set dictionary ~/wordlists/mine.txt
 ```
 
 If no dictionary can be found, spellchecking stays off and the editor says so
