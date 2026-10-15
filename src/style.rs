@@ -52,6 +52,11 @@ impl Paint {
         self.wrap("1;33", s)
     }
 
+    /// A word the dictionary does not know: the usual underline.
+    pub fn misspell(&self, s: &str) -> String {
+        self.wrap("4;31", s)
+    }
+
     /// The search hit the reader is currently sitting on.
     pub fn focus(&self, s: &str) -> String {
         self.wrap("1;30;43", s)

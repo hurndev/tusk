@@ -21,6 +21,13 @@ pub struct Config {
     pub backup: bool,
     /// How wide prose should be in the editor and reader.
     pub prose_width: usize,
+    /// Underline words the dictionary does not know, while editing.
+    pub spellcheck: bool,
+    /// A language tag such as `en_GB`, or a path to a word list.
+    pub dictionary: Option<String>,
+    /// Words to accept on top of the dictionary. Default: `words.txt` beside
+    /// the config file.
+    pub personal_words: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -31,6 +38,9 @@ impl Default for Config {
             pager: None,
             backup: true,
             prose_width: 80,
+            spellcheck: true,
+            dictionary: None,
+            personal_words: None,
         }
     }
 }
@@ -50,6 +60,14 @@ pub fn config_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(x).join("tusk").join("config.toml"));
     }
     Ok(home_dir()?.join(".config").join("tusk").join("config.toml"))
+}
+
+/// The directory tusk keeps its own files in (config, personal words).
+pub fn config_dir() -> Result<PathBuf> {
+    Ok(config_path()?
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(".")))
 }
 
 pub fn home_dir() -> Result<PathBuf> {

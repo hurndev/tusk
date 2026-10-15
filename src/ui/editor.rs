@@ -3,12 +3,16 @@
 //! You just type. Movement follows the wrapping, so Up and Down move by the
 //! line you can see rather than by the line breaks in the file.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
 use super::frame::{self, Flash, Frame, Prose, Terminal};
 use crate::buffer::Buffer;
-use crate::render;
+use crate::config::Config;
+use crate::render::{self, Mark};
+use crate::spell;
 use crate::style::Paint;
 use crate::text;
 
@@ -22,6 +26,111 @@ pub struct EditorOptions {
     pub prose_width: usize,
 }
 
+/// Spellchecking, as the editor sees it.
+///
+/// Only the words currently on screen are ever looked up, and each word's
+/// verdict is remembered, so a redraw costs a hash lookup per visible word.
+pub struct Spell {
+    pub enabled: bool,
+    dict: Option<spell::Dictionary>,
+    /// Something to tell the writer once, on the first frame.
+    notice: Option<String>,
+    /// Kept so F2 can look again after a dictionary has been installed.
+    cfg: Config,
+}
+
+impl Spell {
+    /// Load whatever the config asks for. A dictionary that cannot be found
+    /// leaves spellchecking off, with a reason to show.
+    pub fn new(cfg: &Config) -> Spell {
+        if !cfg.spellcheck {
+            return Spell {
+                enabled: false,
+                dict: None,
+                notice: None,
+                cfg: cfg.clone(),
+            };
+        }
+        match spell::Dictionary::load(cfg) {
+            spell::Status::Ready(dict) => Spell {
+                enabled: true,
+                dict: Some(*dict),
+                notice: None,
+                cfg: cfg.clone(),
+            },
+            spell::Status::Disabled(reason) => Spell {
+                enabled: false,
+                dict: None,
+                notice: Some(reason),
+                cfg: cfg.clone(),
+            },
+        }
+    }
+
+    fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
+    }
+
+    fn active(&mut self) -> Option<&mut spell::Dictionary> {
+        if self.enabled {
+            self.dict.as_mut()
+        } else {
+            None
+        }
+    }
+
+    fn label(&self) -> String {
+        match &self.dict {
+            Some(dict) => dict.summary(),
+            None => "no dictionary".to_string(),
+        }
+    }
+
+    /// What `tusk config show` should say: the dictionary in use, if one
+    /// loaded at all.
+    pub fn dictionary_summary(&self) -> Option<String> {
+        self.dict.as_ref().map(|dict| dict.summary())
+    }
+
+    /// Where that dictionary was read from.
+    pub fn dictionary_source(&self) -> Option<String> {
+        self.dict.as_ref().and_then(|dict| dict.source_note())
+    }
+
+    /// Turn it on or off, looking for a dictionary again in case one has
+    /// appeared since the editor started.
+    fn toggle(&mut self) -> Flash {
+        if self.enabled {
+            self.enabled = false;
+            return Flash::new("spellcheck off");
+        }
+        if self.dict.is_none() {
+            match spell::Dictionary::load(&self.cfg) {
+                spell::Status::Ready(dict) => self.dict = Some(*dict),
+                spell::Status::Disabled(reason) => return Flash::error(reason),
+            }
+        }
+        self.enabled = true;
+        Flash::new(format!("spellcheck on · {}", self.label()))
+    }
+
+    /// Accept the word under the cursor, and remember it.
+    fn add_word(&mut self, line: &str, col: usize) -> Flash {
+        let Some(word) = spell::word_at(line, col) else {
+            return Flash::error("no word under the cursor");
+        };
+        let text = line[word.bytes.0..word.bytes.1].to_string();
+        let Some(dict) = self.active() else {
+            return Flash::error(format!("spellcheck is off · {text}"));
+        };
+        match dict.add_word(&text) {
+            Ok(true) => Flash::new(format!("added \"{text}\" to your words")),
+            Ok(false) => Flash::new(format!("\"{text}\" is already in your words")),
+            Err(err) => Flash::error(format!("could not save \"{text}\": {err}")),
+        }
+    }
+}
+
 /// Run the editor over `buffer` until the user quits.
 ///
 /// `save` is called every time the user presses Ctrl+S. It is handed the whole
@@ -32,10 +141,11 @@ pub fn run(
     options: &EditorOptions,
     paint: &Paint,
     save: &mut dyn FnMut(&str) -> Result<()>,
+    spell: &mut Spell,
 ) -> Result<()> {
     let mut saved_once = false;
     let mut scroll = 0usize;
-    let mut flash: Option<Flash> = None;
+    let mut flash: Option<Flash> = spell.take_notice().map(Flash::error);
     let mut confirm_quit = false;
 
     {
@@ -58,19 +168,67 @@ pub fn run(
             }
             let max_scroll = layout.lines.len().saturating_sub(view_height);
             scroll = scroll.min(max_scroll);
+            let visible_end = (scroll + view_height).min(layout.lines.len());
+
+            // Spellchecking looks at the lines on screen, and only once each,
+            // however many display rows they occupy.
+            let row_spans: HashMap<usize, Vec<(usize, usize)>> = match spell.active() {
+                None => HashMap::new(),
+                Some(dict) => {
+                    let mut rows: Vec<usize> = layout.lines[scroll..visible_end]
+                        .iter()
+                        .map(|l| l.row)
+                        .collect();
+                    rows.dedup();
+                    let mut found = HashMap::new();
+                    for row in rows {
+                        if let Some(line) = buffer.lines.get(row) {
+                            let spans = dict.unknown_spans(line);
+                            if !spans.is_empty() {
+                                found.insert(row, spans);
+                            }
+                        }
+                    }
+                    found
+                }
+            };
+
+            // The word under the cursor, if the dictionary does not know it.
+            let unknown_here: Option<String> = match spell.active() {
+                None => None,
+                Some(dict) => spell::word_at(buffer.current_line(), buffer.col)
+                    .map(|w| buffer.current_line()[w.bytes.0..w.bytes.1].to_string())
+                    .filter(|word| dict.is_unknown(word)),
+            };
 
             let mut frame = Frame::new(cols, rows);
             frame.clear();
 
             // The prose itself.
-            let visible_end = (scroll + view_height).min(layout.lines.len());
             for display_row in scroll..visible_end {
                 let line = layout.lines[display_row];
                 let chars: Vec<char> = buffer.lines[line.row].chars().collect();
-                let raw: String = chars[line.start..line.start.max(line.end)].iter().collect();
-                let body = text::expand_tabs(&raw);
-                let body = body.trim_end();
-                let styled = render::colorize_tags(body, paint);
+                let end = line.end.max(line.start).min(chars.len());
+                let raw: String = chars[line.start.min(end)..end].iter().collect();
+                // Trimming here cannot move the marks: words never live in
+                // trailing space.
+                let body = raw.trim_end();
+
+                let mut marks: Vec<(usize, usize, Mark)> = Vec::new();
+                for (start, finish) in row_spans.get(&line.row).into_iter().flatten() {
+                    // A word split across display rows is skipped rather than
+                    // underlined twice.
+                    if *start >= line.start && *finish <= line.end {
+                        marks.push((*start - line.start, *finish - line.start, Mark::Misspelled));
+                    }
+                }
+                for (start, finish) in render::tag_spans(body) {
+                    marks.push((start, finish, Mark::Tag));
+                }
+                marks.sort_unstable_by_key(|(start, _, _)| *start);
+
+                let styled = render::marked(body, paint, &marks);
+                let styled = text::expand_tabs(&styled);
                 let y = display_row - scroll;
                 frame.put_raw(prose.margin, y, &styled);
 
@@ -94,13 +252,16 @@ pub fn run(
             };
             let hint_y = rows.saturating_sub(2);
             let status_y = rows.saturating_sub(1);
+            let spell_hint = match &unknown_here {
+                Some(word) => format!("\"{word}\" isn't in the dictionary — F3 adds it"),
+                None => "F2 spellcheck".to_string(),
+            };
             let hint = match (&quit_prompt, &flash) {
                 (Some(prompt), _) => prompt.clone(),
                 (None, Some(flash)) => flash.render(paint),
-                (None, None) => paint.dim(
-                    "Ctrl+S save   Ctrl+Q quit   Ctrl+Z undo   Ctrl+Y redo   \
-                     Ctrl+K kill line   Ctrl+←/→ word",
-                ),
+                (None, None) => paint.dim(&format!(
+                    "Ctrl+S save   Ctrl+Q quit   Ctrl+Z/Y undo/redo   Ctrl+K kill   {spell_hint}"
+                )),
             };
             frame.put(0, hint_y, &hint);
 
@@ -146,24 +307,24 @@ pub fn run(
 
                     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                     let alt = key.modifiers.contains(KeyModifiers::ALT);
-                    if !alt
-                        && let Some(flash_message) = handle_key(
+                    if !alt {
+                        let mut session = Session {
                             buffer,
-                            &layout,
-                            key.code,
-                            ctrl,
-                            view_height,
+                            layout: &layout,
                             save,
-                            &mut saved_once,
-                        )
-                    {
-                        match flash_message {
-                            Outcome::Message(message) => flash = Some(message),
-                            Outcome::Quit => {
-                                if buffer.is_dirty() && !buffer.is_empty() {
-                                    confirm_quit = true;
-                                } else {
-                                    break;
+                            spell,
+                            saved_once: &mut saved_once,
+                            view_height,
+                        };
+                        if let Some(outcome) = session.key(key.code, ctrl) {
+                            match outcome {
+                                Outcome::Message(message) => flash = Some(message),
+                                Outcome::Quit => {
+                                    if buffer.is_dirty() && !buffer.is_empty() {
+                                        confirm_quit = true;
+                                    } else {
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -186,133 +347,143 @@ enum Outcome {
     Quit,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn handle_key(
-    buffer: &mut Buffer,
-    layout: &text::Layout,
-    code: KeyCode,
-    ctrl: bool,
+/// The state a keystroke may touch, bundled so the key handler can stay a
+/// single match.
+struct Session<'a> {
+    buffer: &'a mut Buffer,
+    layout: &'a text::Layout,
+    save: &'a mut dyn FnMut(&str) -> Result<()>,
+    spell: &'a mut Spell,
+    saved_once: &'a mut bool,
     view_height: usize,
-    save: &mut dyn FnMut(&str) -> Result<()>,
-    saved_once: &mut bool,
-) -> Option<Outcome> {
-    let page = view_height as isize;
-    match (code, ctrl) {
-        (KeyCode::Char('s'), true) => {
-            if buffer.is_empty() {
-                return Some(Outcome::Message(Flash::error(
-                    "nothing to save yet — write something first",
-                )));
-            }
-            match save(&buffer.text()) {
-                Ok(()) => {
-                    buffer.mark_saved();
-                    *saved_once = true;
-                    Some(Outcome::Message(Flash::new("saved")))
+}
+
+impl Session<'_> {
+    fn key(&mut self, code: KeyCode, ctrl: bool) -> Option<Outcome> {
+        let page = self.view_height as isize;
+        match (code, ctrl) {
+            (KeyCode::Char('s'), true) => {
+                if self.buffer.is_empty() {
+                    return Some(Outcome::Message(Flash::error(
+                        "nothing to save yet — write something first",
+                    )));
                 }
-                Err(err) => Some(Outcome::Message(Flash::error(format!(
-                    "save failed: {err}"
-                )))),
+                match (self.save)(&self.buffer.text()) {
+                    Ok(()) => {
+                        self.buffer.mark_saved();
+                        *self.saved_once = true;
+                        Some(Outcome::Message(Flash::new("saved")))
+                    }
+                    Err(err) => Some(Outcome::Message(Flash::error(format!(
+                        "save failed: {err}"
+                    )))),
+                }
             }
+            (KeyCode::Char('q'), true) | (KeyCode::Char('c'), true) => Some(Outcome::Quit),
+            (KeyCode::Esc, _) => Some(Outcome::Quit),
+            (KeyCode::F(2), _) => Some(Outcome::Message(self.spell.toggle())),
+            (KeyCode::F(3), _) => {
+                let line = self.buffer.current_line().to_string();
+                let col = self.buffer.col;
+                Some(Outcome::Message(self.spell.add_word(&line, col)))
+            }
+            (KeyCode::Char('z'), true) => {
+                self.buffer.undo();
+                None
+            }
+            (KeyCode::Char('y'), true) => {
+                self.buffer.redo();
+                None
+            }
+            (KeyCode::Char('k'), true) => {
+                self.buffer.kill_to_end();
+                None
+            }
+            (KeyCode::Char('u'), true) => {
+                self.buffer.kill_to_start();
+                None
+            }
+            (KeyCode::Char('a'), true) => {
+                self.buffer.home();
+                None
+            }
+            (KeyCode::Char('e'), true) => {
+                self.buffer.end();
+                None
+            }
+            (KeyCode::Char('w'), true) | (KeyCode::Backspace, true) => {
+                self.buffer.delete_word_before();
+                None
+            }
+            (KeyCode::Left, true) => {
+                self.buffer.word_left();
+                None
+            }
+            (KeyCode::Right, true) => {
+                self.buffer.word_right();
+                None
+            }
+            (KeyCode::Char(c), false) => {
+                self.buffer.insert_char(c);
+                None
+            }
+            (KeyCode::Enter, _) => {
+                self.buffer.newline();
+                None
+            }
+            (KeyCode::Tab, _) => {
+                self.buffer.insert_str("    ");
+                None
+            }
+            (KeyCode::Backspace, _) => {
+                self.buffer.backspace();
+                None
+            }
+            (KeyCode::Delete, _) => {
+                self.buffer.delete();
+                None
+            }
+            (KeyCode::Left, _) => {
+                self.buffer.left();
+                None
+            }
+            (KeyCode::Right, _) => {
+                self.buffer.right();
+                None
+            }
+            (KeyCode::Up, _) => {
+                self.buffer.move_display(self.layout, -1);
+                None
+            }
+            (KeyCode::Down, _) => {
+                self.buffer.move_display(self.layout, 1);
+                None
+            }
+            (KeyCode::PageUp, _) => {
+                self.buffer.move_display(self.layout, -page);
+                None
+            }
+            (KeyCode::PageDown, _) => {
+                self.buffer.move_display(self.layout, page);
+                None
+            }
+            (KeyCode::Home, true) => {
+                self.buffer.doc_start();
+                None
+            }
+            (KeyCode::End, true) => {
+                self.buffer.doc_end();
+                None
+            }
+            (KeyCode::Home, _) => {
+                self.buffer.home();
+                None
+            }
+            (KeyCode::End, _) => {
+                self.buffer.end();
+                None
+            }
+            _ => None,
         }
-        (KeyCode::Char('q'), true) | (KeyCode::Char('c'), true) => Some(Outcome::Quit),
-        (KeyCode::Esc, _) => Some(Outcome::Quit),
-        (KeyCode::Char('z'), true) => {
-            buffer.undo();
-            None
-        }
-        (KeyCode::Char('y'), true) => {
-            buffer.redo();
-            None
-        }
-        (KeyCode::Char('k'), true) => {
-            buffer.kill_to_end();
-            None
-        }
-        (KeyCode::Char('u'), true) => {
-            buffer.kill_to_start();
-            None
-        }
-        (KeyCode::Char('a'), true) => {
-            buffer.home();
-            None
-        }
-        (KeyCode::Char('e'), true) => {
-            buffer.end();
-            None
-        }
-        (KeyCode::Char('w'), true) | (KeyCode::Backspace, true) => {
-            buffer.delete_word_before();
-            None
-        }
-        (KeyCode::Left, true) => {
-            buffer.word_left();
-            None
-        }
-        (KeyCode::Right, true) => {
-            buffer.word_right();
-            None
-        }
-        (KeyCode::Char(c), false) => {
-            buffer.insert_char(c);
-            None
-        }
-        (KeyCode::Enter, _) => {
-            buffer.newline();
-            None
-        }
-        (KeyCode::Tab, _) => {
-            buffer.insert_str("    ");
-            None
-        }
-        (KeyCode::Backspace, _) => {
-            buffer.backspace();
-            None
-        }
-        (KeyCode::Delete, _) => {
-            buffer.delete();
-            None
-        }
-        (KeyCode::Left, _) => {
-            buffer.left();
-            None
-        }
-        (KeyCode::Right, _) => {
-            buffer.right();
-            None
-        }
-        (KeyCode::Up, _) => {
-            buffer.move_display(layout, -1);
-            None
-        }
-        (KeyCode::Down, _) => {
-            buffer.move_display(layout, 1);
-            None
-        }
-        (KeyCode::PageUp, _) => {
-            buffer.move_display(layout, -page);
-            None
-        }
-        (KeyCode::PageDown, _) => {
-            buffer.move_display(layout, page);
-            None
-        }
-        (KeyCode::Home, true) => {
-            buffer.doc_start();
-            None
-        }
-        (KeyCode::End, true) => {
-            buffer.doc_end();
-            None
-        }
-        (KeyCode::Home, _) => {
-            buffer.home();
-            None
-        }
-        (KeyCode::End, _) => {
-            buffer.end();
-            None
-        }
-        _ => None,
     }
 }

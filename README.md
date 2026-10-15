@@ -108,6 +108,54 @@ TUSK_EDITOR=builtin tusk new       # force the built-in editor back on
 
 `editor = "vim"` in the config file does the same thing permanently.
 
+### Spellchecking
+
+While you write, words the dictionary does not know are underlined in red.
+
+| key | what it does |
+| --- | --- |
+| `F2` | turn spellchecking on or off for this session |
+| `F3` | accept the word under the cursor, and remember it |
+
+Only the text on screen is ever looked up, and each word's verdict is
+remembered, so a redraw costs a few microseconds per visible word instead of
+re-reading your entry. A 40-line screenful is around 80µs — roughly 0.5% of a
+frame — so it never gets in the way of typing.
+
+The default is British English:
+
+```sh
+tusk config set dictionary en_GB          # the default
+tusk config set dictionary ~/words.txt    # or point at any word list
+TUSK_DICTIONARY=en_US tusk new            # or override it for one run
+```
+
+`dictionary` takes either a language tag or a path. For a tag, tusk looks in the
+usual places (`/usr/share/hunspell/en_GB.dic`, `/usr/share/myspell`, `/usr/share/dict/british-english`, and
+the equivalents under `~/.local` and `~/.config/tusk`). Any of these work — one
+word per line, or a hunspell `.dic` (flags are ignored):
+
+```sh
+sudo pacman -S hunspell-en_gb        # Arch
+sudo apt install hunspell-en-gb      # Debian, Ubuntu
+```
+
+If no dictionary can be found, spellchecking stays off and the editor says so
+once; `tusk config show` reports it too.
+
+Words you vouch for — names, places, jargon — go in a personal list, which `F3`
+appends to and which is read alongside the dictionary:
+
+```sh
+~/.config/tusk/words.txt             # one word per line, # for comments
+```
+
+Because this is a plain word list and not a full speller, it accepts regular
+inflections of words it knows (`walked`, `running`, `carries`, `Sam's`,
+`self-care`) and ignores things that are not prose: `#tags`, `@names`, acronyms
+like `BBC`, and anything stuck to a digit (`10th`, `1980s`). It will not catch
+every mistake, and it will occasionally flag a name. `F3` is the answer to that.
+
 ## Reading
 
 ```sh
@@ -233,6 +281,9 @@ editor = "builtin"                  # or any external command, e.g. "vim"
 prose_width = 80                    # 20-200 columns
 pager = "less -R"                   # only used by `tusk read --pager`
 backup = true
+spellcheck = true                   # underline unknown words as you write
+dictionary = "en_GB"                # a language tag, or a path to a word list
+personal_words = "~/.config/tusk/words.txt"
 ```
 
 The journal path is resolved in this order:
@@ -288,6 +339,8 @@ cargo build --release
 * Entries are prose; the format has no nesting, titles, or attachments.
 * A body line that itself looks like `[2026-03-14 10:00] …` would be read as a
   new entry later. tusk warns you when you write one.
+* Spellchecking needs a dictionary. With none installed it stays off and says
+  so; see [Spellchecking](#spellchecking) for where it looks.
 * The built-in editor and reader need a terminal. In a script or a pipe, use
   `tusk new` (or pipe into it), `tusk read --print`, or `--external`.
 * Encryption is not supported — that is what your disk encryption is for.

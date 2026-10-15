@@ -12,6 +12,7 @@ mod editor;
 mod journal;
 mod query;
 mod render;
+mod spell;
 mod style;
 mod text;
 mod ui;

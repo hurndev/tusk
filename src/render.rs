@@ -109,6 +109,56 @@ pub fn colorize_tags(text: &str, paint: &Paint) -> String {
         .into_owned()
 }
 
+/// Character spans of the `#tags` and `@names` in a line.
+pub fn tag_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    for m in tag_regex().find_iter(text) {
+        // Byte offsets from the regex, character indices for the renderer.
+        let start = text[..m.start()].chars().count();
+        let end = start + m.as_str().chars().count();
+        out.push((start, end));
+    }
+    out
+}
+
+/// What a marked span should look like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// A `#tag` or `@name`.
+    Tag,
+    /// A word the dictionary does not know.
+    Misspelled,
+}
+
+/// Style disjoint character ranges of a line, leaving the rest alone.
+///
+/// Spans must be sorted; any that overlap something already written are
+/// ignored, so a caller cannot mangle the line by assembling them loosely.
+pub fn marked(text: &str, paint: &Paint, marks: &[(usize, usize, Mark)]) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + marks.len() * 8);
+    let mut pos = 0usize;
+    for (start, end, mark) in marks {
+        let (start, end) = (*start, (*end).min(chars.len()));
+        if start < pos || end <= start {
+            continue;
+        }
+        if start > pos {
+            out.extend(&chars[pos..start]);
+        }
+        let piece: String = chars[start..end].iter().collect();
+        out.push_str(&match mark {
+            Mark::Tag => paint.tag(&piece),
+            Mark::Misspelled => paint.misspell(&piece),
+        });
+        pos = end;
+    }
+    if pos < chars.len() {
+        out.extend(&chars[pos..]);
+    }
+    out
+}
+
 fn dim_rule(label: &str, paint: &Paint, width: usize) -> String {
     paint.separator(&rule(label, width))
 }

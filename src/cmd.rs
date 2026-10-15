@@ -599,6 +599,7 @@ fn compose(
             let mut saved_index = draft.editing;
             let mut saved_any = false;
             let backup = !cli.no_backup;
+            let mut spell = ui::editor::Spell::new(cfg);
             {
                 let mut saver = |text: &str| -> Result<()> {
                     let body = editor::clean_text(text);
@@ -619,7 +620,7 @@ fn compose(
                     saved_any = true;
                     Ok(())
                 };
-                ui::editor::run(&mut buffer, &options, paint, &mut saver)?;
+                ui::editor::run(&mut buffer, &options, paint, &mut saver, &mut spell)?;
             }
             match (saved_any, saved_index) {
                 (true, Some(index)) => Ok(Compose::Saved(index)),
@@ -1055,6 +1056,25 @@ fn cmd_config(cli: &Cli, cfg: &Config, paint: &Paint, args: &ConfigArgs) -> Resu
                 if cfg.backup { "on" } else { "off" },
                 paint,
             ));
+            let spell = ui::editor::Spell::new(cfg);
+            match spell.dictionary_summary() {
+                Some(summary) => say(&render::stat_row(
+                    "spellcheck",
+                    &match spell.dictionary_source() {
+                        Some(source) => format!("on  ·  {summary}  ·  {source}"),
+                        None => format!("on  ·  {summary}"),
+                    },
+                    paint,
+                )),
+                None if !cfg.spellcheck => {
+                    say(&render::stat_row("spellcheck", "off", paint));
+                }
+                None => say(&render::stat_row(
+                    "spellcheck",
+                    &paint.warn("on, but no dictionary found — see README"),
+                    paint,
+                )),
+            }
             say("");
             match fs::read_to_string(&path) {
                 Ok(text) => {
@@ -1076,6 +1096,21 @@ fn cmd_config(cli: &Cli, cfg: &Config, paint: &Paint, args: &ConfigArgs) -> Resu
                 "pager" => editor::pager_command(cfg).unwrap_or_default(),
                 "backup" => cfg.backup.to_string(),
                 "prose_width" => cfg.prose_width().to_string(),
+                "spellcheck" => cfg.spellcheck.to_string(),
+                "dictionary" => match std::env::var("TUSK_DICTIONARY") {
+                    Ok(value) if !value.trim().is_empty() => {
+                        format!("{value}  (from $TUSK_DICTIONARY)")
+                    }
+                    _ => cfg
+                        .dictionary
+                        .clone()
+                        .unwrap_or_else(|| "en_GB (default)".to_string()),
+                },
+                "personal_words" => cfg
+                    .personal_words
+                    .clone()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(config dir)/words.txt".to_string()),
                 _ => unreachable!("normalize_key validated the key"),
             };
             say(&value);
@@ -1098,6 +1133,11 @@ fn cmd_config(cli: &Cli, cfg: &Config, paint: &Paint, args: &ConfigArgs) -> Resu
                 "pager" => updated.pager = Some(value.clone()),
                 "backup" => updated.backup = parse_bool(value)?,
                 "prose_width" => updated.prose_width = parse_width(value)?,
+                "spellcheck" => updated.spellcheck = parse_bool(value)?,
+                "dictionary" => updated.dictionary = Some(value.clone()),
+                "personal_words" => {
+                    updated.personal_words = Some(config::expand(PathBuf::from(value).as_path()))
+                }
                 _ => unreachable!("normalize_key validated the key"),
             }
             let written = config::save(&updated)?;
@@ -1117,6 +1157,9 @@ fn cmd_config(cli: &Cli, cfg: &Config, paint: &Paint, args: &ConfigArgs) -> Resu
                 "pager" => updated.pager = None,
                 "backup" => updated.backup = true,
                 "prose_width" => updated.prose_width = 80,
+                "spellcheck" => updated.spellcheck = true,
+                "dictionary" => updated.dictionary = None,
+                "personal_words" => updated.personal_words = None,
                 _ => unreachable!("normalize_key validated the key"),
             }
             config::save(&updated)?;
@@ -1198,6 +1241,14 @@ fn cmd_init(cfg: &Config, paint: &Paint, args: &InitArgs) -> Result<()> {
         ));
     }
     facts.push(format!("editor   {editor_value}"));
+    let spell = ui::editor::Spell::new(&updated);
+    match spell.dictionary_summary() {
+        Some(summary) => facts.push(format!("spelling {summary}")),
+        None if updated.spellcheck => {
+            facts.push("spelling off — no dictionary found (see the README)".to_string())
+        }
+        None => {}
+    }
     for fact in facts {
         say(&format!("  {}", paint.dim(&fact)));
     }
@@ -1219,9 +1270,13 @@ fn normalize_key(key: &str) -> Result<String> {
         "pager" => "pager",
         "backup" | "backups" => "backup",
         "prose_width" | "prose" | "width" | "wrap" | "columns" => "prose_width",
-        other => {
-            bail!("unknown setting `{other}` — try journal, editor, pager, backup, or prose_width")
-        }
+        "spellcheck" | "spell" | "spelling" => "spellcheck",
+        "dictionary" | "dict" | "language" | "lang" => "dictionary",
+        "personal_words" | "words" | "wordlist" => "personal_words",
+        other => bail!(
+            "unknown setting `{other}` — try journal, editor, pager, backup, prose_width, \
+             spellcheck, dictionary, or personal_words"
+        ),
     };
     Ok(key.to_string())
 }
