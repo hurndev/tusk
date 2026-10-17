@@ -21,8 +21,6 @@ pub struct Config {
     pub backup: bool,
     /// How wide prose should be in the editor and reader.
     pub prose_width: usize,
-    /// Underline words the dictionary does not know, while editing.
-    pub spellcheck: bool,
     /// A language tag such as `en_GB`, or a path to a word list.
     pub dictionary: Option<String>,
     /// Words to accept on top of the dictionary. Default: `words.txt` beside
@@ -38,7 +36,6 @@ impl Default for Config {
             pager: None,
             backup: true,
             prose_width: 80,
-            spellcheck: true,
             dictionary: None,
             personal_words: None,
         }

@@ -398,6 +398,7 @@ fn cmd_read(cli: &Cli, cfg: &Config, args: &ReadArgs) -> Result<()> {
     }
 
     let mut follow = None;
+    let mut spell = ui::spell::Spell::new(cfg);
     loop {
         let doc = build_doc(&journal, &indices);
         let options = ui::reader::ReaderOptions {
@@ -405,7 +406,7 @@ fn cmd_read(cli: &Cli, cfg: &Config, args: &ReadArgs) -> Result<()> {
             prose_width: width,
             follow_entry: follow,
         };
-        match ui::reader::run(&doc, &options, &paint)? {
+        match ui::reader::run(&doc, &options, &paint, &mut spell)? {
             ui::reader::Action::Quit => break,
             ui::reader::Action::Edit(index) => {
                 let entry = journal.entries[index].clone();
@@ -599,7 +600,7 @@ fn compose(
             let mut saved_index = draft.editing;
             let mut saved_any = false;
             let backup = !cli.no_backup;
-            let mut spell = ui::editor::Spell::new(cfg);
+            let mut spell = ui::spell::Spell::new(cfg);
             {
                 let mut saver = |text: &str| -> Result<()> {
                     let body = editor::clean_text(text);
@@ -1056,22 +1057,18 @@ fn cmd_config(cli: &Cli, cfg: &Config, paint: &Paint, args: &ConfigArgs) -> Resu
                 if cfg.backup { "on" } else { "off" },
                 paint,
             ));
-            let spell = ui::editor::Spell::new(cfg);
-            match spell.dictionary_summary() {
-                Some(summary) => say(&render::stat_row(
-                    "spellcheck",
-                    &match spell.dictionary_source() {
-                        Some(source) => format!("on  ·  {summary}  ·  {source}"),
-                        None => format!("on  ·  {summary}"),
-                    },
-                    paint,
-                )),
-                None if !cfg.spellcheck => {
-                    say(&render::stat_row("spellcheck", "off", paint));
+            // On demand: nothing is loaded until F2, so this is a probe.
+            match crate::spell::Dictionary::load(cfg) {
+                crate::spell::Status::Ready(dict) => {
+                    let mut note = format!("on demand (F2)  ·  {}", dict.summary());
+                    if let Some(source) = dict.source_note() {
+                        note = format!("{note}  ·  {source}");
+                    }
+                    say(&render::stat_row("spellcheck", &note, paint));
                 }
-                None => say(&render::stat_row(
+                crate::spell::Status::Disabled(_) => say(&render::stat_row(
                     "spellcheck",
-                    &paint.warn("on, but no dictionary found — see README"),
+                    &paint.warn("on demand (F2), but no dictionary found — see README"),
                     paint,
                 )),
             }
@@ -1096,7 +1093,6 @@ fn cmd_config(cli: &Cli, cfg: &Config, paint: &Paint, args: &ConfigArgs) -> Resu
                 "pager" => editor::pager_command(cfg).unwrap_or_default(),
                 "backup" => cfg.backup.to_string(),
                 "prose_width" => cfg.prose_width().to_string(),
-                "spellcheck" => cfg.spellcheck.to_string(),
                 "dictionary" => match std::env::var("TUSK_DICTIONARY") {
                     Ok(value) if !value.trim().is_empty() => {
                         format!("{value}  (from $TUSK_DICTIONARY)")
@@ -1133,7 +1129,6 @@ fn cmd_config(cli: &Cli, cfg: &Config, paint: &Paint, args: &ConfigArgs) -> Resu
                 "pager" => updated.pager = Some(value.clone()),
                 "backup" => updated.backup = parse_bool(value)?,
                 "prose_width" => updated.prose_width = parse_width(value)?,
-                "spellcheck" => updated.spellcheck = parse_bool(value)?,
                 "dictionary" => updated.dictionary = Some(value.clone()),
                 "personal_words" => {
                     updated.personal_words = Some(config::expand(PathBuf::from(value).as_path()))
@@ -1157,7 +1152,6 @@ fn cmd_config(cli: &Cli, cfg: &Config, paint: &Paint, args: &ConfigArgs) -> Resu
                 "pager" => updated.pager = None,
                 "backup" => updated.backup = true,
                 "prose_width" => updated.prose_width = 80,
-                "spellcheck" => updated.spellcheck = true,
                 "dictionary" => updated.dictionary = None,
                 "personal_words" => updated.personal_words = None,
                 _ => unreachable!("normalize_key validated the key"),
@@ -1241,13 +1235,13 @@ fn cmd_init(cfg: &Config, paint: &Paint, args: &InitArgs) -> Result<()> {
         ));
     }
     facts.push(format!("editor   {editor_value}"));
-    let spell = ui::editor::Spell::new(&updated);
-    match spell.dictionary_summary() {
-        Some(summary) => facts.push(format!("spelling {summary}")),
-        None if updated.spellcheck => {
+    match crate::spell::Dictionary::load(&updated) {
+        crate::spell::Status::Ready(dict) => {
+            facts.push(format!("spelling {} (F2 in the editor)", dict.summary()))
+        }
+        crate::spell::Status::Disabled(_) => {
             facts.push("spelling off — no dictionary found (see the README)".to_string())
         }
-        None => {}
     }
     for fact in facts {
         say(&format!("  {}", paint.dim(&fact)));
@@ -1270,12 +1264,11 @@ fn normalize_key(key: &str) -> Result<String> {
         "pager" => "pager",
         "backup" | "backups" => "backup",
         "prose_width" | "prose" | "width" | "wrap" | "columns" => "prose_width",
-        "spellcheck" | "spell" | "spelling" => "spellcheck",
         "dictionary" | "dict" | "language" | "lang" => "dictionary",
         "personal_words" | "words" | "wordlist" => "personal_words",
         other => bail!(
             "unknown setting `{other}` — try journal, editor, pager, backup, prose_width, \
-             spellcheck, dictionary, or personal_words"
+             dictionary, or personal_words"
         ),
     };
     Ok(key.to_string())

@@ -9,5 +9,6 @@
 pub mod editor;
 pub mod frame;
 pub mod reader;
+pub mod spell;
 
 pub use frame::Prose;

@@ -7,7 +7,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use regex::{Regex, RegexBuilder};
 
 use super::frame::{self, Flash, Frame, Prose, Terminal};
-use crate::render;
+use super::spell::Spell;
+use crate::render::{self, Mark};
 use crate::style::Paint;
 use crate::text;
 
@@ -87,7 +88,7 @@ pub enum Action {
     Edit(usize),
 }
 
-pub fn run(doc: &Doc, options: &ReaderOptions, paint: &Paint) -> Result<Action> {
+pub fn run(doc: &Doc, options: &ReaderOptions, paint: &Paint, spell: &mut Spell) -> Result<Action> {
     if !frame::interactive() {
         // The caller should have checked, but never take over a pipe.
         return Ok(Action::Quit);
@@ -148,7 +149,13 @@ pub fn run(doc: &Doc, options: &ReaderOptions, paint: &Paint) -> Result<Action> 
                     break;
                 };
                 let focused = match_cursor < matches.len() && matches[match_cursor] == top + row;
-                let styled = render_visual(visual, paint, regex.as_ref(), focused, prose.width);
+                // While a search is running its highlights take precedence.
+                let marks = match regex {
+                    Some(_) => Vec::new(),
+                    None => marks_for(visual, spell),
+                };
+                let styled =
+                    render_visual(visual, paint, regex.as_ref(), focused, prose.width, &marks);
                 frame.put_raw(prose.margin, row, &styled);
             }
 
@@ -180,7 +187,7 @@ pub fn run(doc: &Doc, options: &ReaderOptions, paint: &Paint) -> Result<Action> 
                 )
             } else {
                 format!(
-                    " {}   ·   {}%   ·   {}   ·   q quit   / search   e edit   ? keys ",
+                    " {}   ·   {}%   ·   {}   ·   q / search   e edit   F2 spell   ? keys ",
                     options.title, percent, position
                 )
             };
@@ -275,6 +282,7 @@ pub fn run(doc: &Doc, options: &ReaderOptions, paint: &Paint) -> Result<Action> 
                         KeyCode::Char('q') => return Ok(Action::Quit),
                         KeyCode::Esc => return Ok(Action::Quit),
                         KeyCode::Char('?') => help = !help,
+                        KeyCode::F(2) => flash = Some(spell.toggle()),
                         KeyCode::Char('/') => {
                             search_input = Some(String::new());
                             help = false;
@@ -366,20 +374,41 @@ fn jump_to_match(top: &mut usize, matches: &[usize], index: usize, height: usize
     *top = line.saturating_sub(height / 3);
 }
 
+/// Tags are always marked; misspellings are marked when spellchecking is on.
+fn marks_for(visual: &Visual, spell: &mut Spell) -> Vec<(usize, usize, Mark)> {
+    let mut marks: Vec<(usize, usize, Mark)> = render::tag_spans(&visual.text)
+        .into_iter()
+        .map(|(start, end)| (start, end, Mark::Tag))
+        .collect();
+    if visual.kind == Kind::Body
+        && let Some(dict) = spell.active()
+    {
+        marks.extend(
+            dict.unknown_spans(&visual.text)
+                .into_iter()
+                .map(|(start, end)| (start, end, Mark::Misspelled)),
+        );
+        marks.sort_unstable_by_key(|(start, _, _)| *start);
+    }
+    marks
+}
+
 fn render_visual(
     visual: &Visual,
     paint: &Paint,
     regex: Option<&Regex>,
     focused: bool,
     width: usize,
+    marks: &[(usize, usize, Mark)],
 ) -> String {
     let plain = frame::clip(visual.text.trim_end(), width);
     match visual.kind {
         Kind::Blank => String::new(),
         Kind::Heading => paint.separator(&plain),
         Kind::Body => {
-            // Highlight search hits on plain text; otherwise, colour tags.
-            // Never both, so no escape sequence can be matched by accident.
+            // Search hits take precedence; otherwise tags and, if asked for,
+            // the words the dictionary does not know. One style pass, so no
+            // escape sequence can be matched by accident.
             match regex {
                 Some(re) if re.is_match(&plain) => re
                     .replace_all(&plain, |caps: &regex::Captures| {
@@ -390,14 +419,16 @@ fn render_visual(
                         }
                     })
                     .into_owned(),
-                _ => render::colorize_tags(&plain, paint),
+                Some(_) => render::colorize_tags(&plain, paint),
+                None if !marks.is_empty() => render::marked(&plain, paint, marks),
+                None => render::colorize_tags(&plain, paint),
             }
         }
     }
 }
 
 fn draw_help(frame: &mut Frame, cols: usize, rows: usize, paint: &Paint) {
-    let keys: [(&str, &str); 12] = [
+    let keys: [(&str, &str); 13] = [
         ("j / ↓", "scroll down"),
         ("k / ↑", "scroll up"),
         ("space / f", "page down"),
@@ -407,6 +438,7 @@ fn draw_help(frame: &mut Frame, cols: usize, rows: usize, paint: &Paint) {
         ("/", "search entries"),
         ("n / N", "next / previous hit"),
         ("e", "edit the entry here"),
+        ("F2", "spellcheck on / off"),
         ("?", "hide these keys"),
         ("q", "quit"),
         ("", ""),

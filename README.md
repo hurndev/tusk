@@ -110,12 +110,18 @@ TUSK_EDITOR=builtin tusk new       # force the built-in editor back on
 
 ### Spellchecking
 
-While you write, words the dictionary does not know are underlined in red.
+Spellchecking is **off every time you start**, and tusk never remembers whether
+you had it on. Press `F2` when you want it: the words the dictionary does not
+know are underlined in red, in the editor and in the reader. Press `F2` again to
+put it away.
 
 | key | what it does |
 | --- | --- |
-| `F2` | turn spellchecking on or off for this session |
-| `F3` | accept the word under the cursor, and remember it |
+| `F2` | turn spellchecking on or off, in the editor and the reader |
+| `F3` | accept the word under the cursor, and remember it (editor) |
+
+Nothing is read from disk until the first `F2`, so starting tusk costs exactly
+what it did before the feature existed.
 
 Only the text on screen is ever looked up, and each word's verdict is
 remembered, so a redraw costs a few microseconds per visible word instead of
@@ -153,8 +159,8 @@ Either format works from any path:
 tusk config set dictionary ~/wordlists/mine.txt
 ```
 
-If no dictionary can be found, spellchecking stays off and the editor says so
-once; `tusk config show` reports it too.
+If no dictionary can be found, `F2` says which one it wanted and stays off;
+`tusk config show` reports the same.
 
 Words you vouch for — names, places, jargon — go in a personal list, which `F3`
 appends to and which is read alongside the dictionary:
@@ -294,9 +300,8 @@ editor = "builtin"                  # or any external command, e.g. "vim"
 prose_width = 80                    # 20-200 columns
 pager = "less -R"                   # only used by `tusk read --pager`
 backup = true
-spellcheck = true                   # underline unknown words as you write
 dictionary = "en_GB"                # a language tag, or a path to a word list
-personal_words = "~/.config/tusk/words.txt"
+personal_words = "~/.config/tusk/words.txt"   # words you vouch for
 ```
 
 The journal path is resolved in this order:
@@ -352,8 +357,8 @@ cargo build --release
 * Entries are prose; the format has no nesting, titles, or attachments.
 * A body line that itself looks like `[2026-03-14 10:00] …` would be read as a
   new entry later. tusk warns you when you write one.
-* Spellchecking needs a dictionary. With none installed it stays off and says
-  so; see [Spellchecking](#spellchecking) for where it looks.
+* Spellchecking needs a dictionary, and is off until you press `F2`. With none
+  installed it stays off and says why; see [Spellchecking](#spellchecking).
 * The built-in editor and reader need a terminal. In a script or a pipe, use
   `tusk new` (or pipe into it), `tusk read --print`, or `--external`.
 * Encryption is not supported — that is what your disk encryption is for.

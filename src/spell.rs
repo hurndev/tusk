@@ -175,10 +175,6 @@ pub struct Dictionary {
 impl Dictionary {
     /// Load the configured dictionary plus any personal word list.
     pub fn load(cfg: &Config) -> Status {
-        if !cfg.spellcheck {
-            return Status::Disabled("spellcheck is off".to_string());
-        }
-
         // $TUSK_DICTIONARY overrides the config, as tusk's other settings allow.
         let requested = env::var("TUSK_DICTIONARY")
             .ok()
@@ -738,24 +734,11 @@ mod tests {
     #[test]
     fn a_missing_dictionary_explains_itself() {
         let cfg = Config {
-            spellcheck: true,
             dictionary: Some("/nonexistent/definitely-not-here.txt".to_string()),
             ..Config::default()
         };
         match Dictionary::load(&cfg) {
             Status::Disabled(reason) => assert!(reason.contains("not found"), "{reason}"),
-            Status::Ready(_) => panic!("should not have loaded"),
-        }
-    }
-
-    #[test]
-    fn loading_can_be_turned_off() {
-        let cfg = Config {
-            spellcheck: false,
-            ..Config::default()
-        };
-        match Dictionary::load(&cfg) {
-            Status::Disabled(reason) => assert!(reason.contains("off")),
             Status::Ready(_) => panic!("should not have loaded"),
         }
     }

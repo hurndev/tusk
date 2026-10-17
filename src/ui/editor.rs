@@ -9,8 +9,8 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
 use super::frame::{self, Flash, Frame, Prose, Terminal};
+use super::spell::Spell;
 use crate::buffer::Buffer;
-use crate::config::Config;
 use crate::render::{self, Mark};
 use crate::spell;
 use crate::style::Paint;
@@ -24,111 +24,6 @@ pub struct EditorOptions {
     pub title: String,
     /// Preferred prose width; narrowed to fit the terminal.
     pub prose_width: usize,
-}
-
-/// Spellchecking, as the editor sees it.
-///
-/// Only the words currently on screen are ever looked up, and each word's
-/// verdict is remembered, so a redraw costs a hash lookup per visible word.
-pub struct Spell {
-    pub enabled: bool,
-    dict: Option<spell::Dictionary>,
-    /// Something to tell the writer once, on the first frame.
-    notice: Option<String>,
-    /// Kept so F2 can look again after a dictionary has been installed.
-    cfg: Config,
-}
-
-impl Spell {
-    /// Load whatever the config asks for. A dictionary that cannot be found
-    /// leaves spellchecking off, with a reason to show.
-    pub fn new(cfg: &Config) -> Spell {
-        if !cfg.spellcheck {
-            return Spell {
-                enabled: false,
-                dict: None,
-                notice: None,
-                cfg: cfg.clone(),
-            };
-        }
-        match spell::Dictionary::load(cfg) {
-            spell::Status::Ready(dict) => Spell {
-                enabled: true,
-                dict: Some(*dict),
-                notice: None,
-                cfg: cfg.clone(),
-            },
-            spell::Status::Disabled(reason) => Spell {
-                enabled: false,
-                dict: None,
-                notice: Some(reason),
-                cfg: cfg.clone(),
-            },
-        }
-    }
-
-    fn take_notice(&mut self) -> Option<String> {
-        self.notice.take()
-    }
-
-    fn active(&mut self) -> Option<&mut spell::Dictionary> {
-        if self.enabled {
-            self.dict.as_mut()
-        } else {
-            None
-        }
-    }
-
-    fn label(&self) -> String {
-        match &self.dict {
-            Some(dict) => dict.summary(),
-            None => "no dictionary".to_string(),
-        }
-    }
-
-    /// What `tusk config show` should say: the dictionary in use, if one
-    /// loaded at all.
-    pub fn dictionary_summary(&self) -> Option<String> {
-        self.dict.as_ref().map(|dict| dict.summary())
-    }
-
-    /// Where that dictionary was read from.
-    pub fn dictionary_source(&self) -> Option<String> {
-        self.dict.as_ref().and_then(|dict| dict.source_note())
-    }
-
-    /// Turn it on or off, looking for a dictionary again in case one has
-    /// appeared since the editor started.
-    fn toggle(&mut self) -> Flash {
-        if self.enabled {
-            self.enabled = false;
-            return Flash::new("spellcheck off");
-        }
-        if self.dict.is_none() {
-            match spell::Dictionary::load(&self.cfg) {
-                spell::Status::Ready(dict) => self.dict = Some(*dict),
-                spell::Status::Disabled(reason) => return Flash::error(reason),
-            }
-        }
-        self.enabled = true;
-        Flash::new(format!("spellcheck on · {}", self.label()))
-    }
-
-    /// Accept the word under the cursor, and remember it.
-    fn add_word(&mut self, line: &str, col: usize) -> Flash {
-        let Some(word) = spell::word_at(line, col) else {
-            return Flash::error("no word under the cursor");
-        };
-        let text = line[word.bytes.0..word.bytes.1].to_string();
-        let Some(dict) = self.active() else {
-            return Flash::error(format!("spellcheck is off · {text}"));
-        };
-        match dict.add_word(&text) {
-            Ok(true) => Flash::new(format!("added \"{text}\" to your words")),
-            Ok(false) => Flash::new(format!("\"{text}\" is already in your words")),
-            Err(err) => Flash::error(format!("could not save \"{text}\": {err}")),
-        }
-    }
 }
 
 /// Run the editor over `buffer` until the user quits.
@@ -145,7 +40,7 @@ pub fn run(
 ) -> Result<()> {
     let mut saved_once = false;
     let mut scroll = 0usize;
-    let mut flash: Option<Flash> = spell.take_notice().map(Flash::error);
+    let mut flash: Option<Flash> = None;
     let mut confirm_quit = false;
 
     {
