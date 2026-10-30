@@ -311,7 +311,7 @@ impl Journal {
 /// How many backups to keep per journal.
 const BACKUPS_KEPT: usize = 10;
 
-fn backup_file(path: &Path) -> Result<PathBuf> {
+pub(crate) fn backup_file(path: &Path) -> Result<PathBuf> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -354,7 +354,7 @@ fn prune_backups(dir: &Path, stem: &str, ext: &str) {
     }
 }
 
-fn temp_sibling(path: &Path) -> PathBuf {
+pub(crate) fn temp_sibling(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .map(|s| s.to_string_lossy().to_string())

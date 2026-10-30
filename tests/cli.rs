@@ -728,3 +728,111 @@ fn creates_missing_parent_directories() {
     assert!(nested.is_file());
     contains(&fs::read_to_string(&nested).unwrap(), "Into the deep.");
 }
+
+#[test]
+fn open_edits_any_text_file() {
+    let sandbox = Sandbox::new("open-file");
+    let path = sandbox.dir.join("notes.md");
+    let path = path.to_str().unwrap();
+
+    // A file that does not exist yet is created by the editor.
+    let out = sandbox.run(&["open", path, "--editor", "printf 'first line\\n' >"]);
+    assert!(
+        out.status.success(),
+        "open failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    contains(&String::from_utf8_lossy(&out.stdout), "wrote");
+    contains(&String::from_utf8_lossy(&out.stdout), "1 line");
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        "first line\n",
+        "the file should hold exactly what the editor wrote"
+    );
+
+    // Running again with an editor that changes nothing reports as much.
+    let same = sandbox.run(&["open", path, "--editor", "true"]);
+    assert!(same.status.success());
+    contains(&String::from_utf8_lossy(&same.stdout), "unchanged");
+    assert_eq!(fs::read_to_string(path).unwrap(), "first line\n");
+}
+
+#[test]
+fn open_refuses_what_it_cannot_edit() {
+    let sandbox = Sandbox::new("open-refusals");
+
+    // A directory is not a text file.
+    let dir = sandbox.dir.join("folder");
+    fs::create_dir_all(&dir).unwrap();
+    let out = sandbox.run(&["open", dir.to_str().unwrap(), "--editor", "true"]);
+    assert!(!out.status.success());
+    contains(&String::from_utf8_lossy(&out.stderr), "is a directory");
+
+    // A file in a directory that does not exist: tusk will not invent the tree.
+    let deep = sandbox.dir.join("missing").join("deep.md");
+    let out = sandbox.run(&["open", deep.to_str().unwrap(), "--editor", "true"]);
+    assert!(!out.status.success());
+    contains(&String::from_utf8_lossy(&out.stderr), "no such directory");
+    assert!(!deep.exists(), "nothing should have been created");
+
+    // Binary files are out of scope.
+    let binary = sandbox.dir.join("picture.bin");
+    fs::write(&binary, b"abc\0def").unwrap();
+    let out = sandbox.run(&["open", binary.to_str().unwrap(), "--editor", "true"]);
+    assert!(!out.status.success());
+    contains(&String::from_utf8_lossy(&out.stderr), "binary");
+    assert_eq!(fs::read(&binary).unwrap(), b"abc\0def", "left untouched");
+}
+
+#[test]
+fn open_hands_the_file_to_the_configured_editor() {
+    let sandbox = Sandbox::new("open-config");
+    let path = sandbox.dir.join("todo.txt");
+    sandbox.ok(&["config", "set", "editor", "printf 'from the config\\n' >"]);
+
+    let out = sandbox.run(&["open", path.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "open failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "from the config\n");
+}
+
+#[test]
+fn opening_a_file_needs_a_terminal_for_the_built_in_editor() {
+    let sandbox = Sandbox::new("open-terminal");
+    let path = sandbox.dir.join("notes.md");
+    let out = sandbox.run(&["open", path.to_str().unwrap()]);
+    assert!(!out.status.success());
+    contains(
+        &String::from_utf8_lossy(&out.stderr),
+        "built-in editor needs a terminal",
+    );
+    assert!(!path.exists(), "nothing should have been written");
+}
+
+#[test]
+fn open_without_a_path_is_the_journal_itself() {
+    let sandbox = Sandbox::new("open-journal");
+    sandbox.add("2026-05-01 09:00", "A line to fix by hand.");
+
+    // The raw file, headers and all, goes to the editor.
+    let out = sandbox.run(&[
+        "open",
+        "--editor",
+        "printf '[2026-05-01 09:00:00 AM] Fixed by hand.\\n' >",
+    ]);
+    assert!(
+        out.status.success(),
+        "open failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(sandbox.text(), "[2026-05-01 09:00:00 AM] Fixed by hand.\n");
+    contains(&String::from_utf8_lossy(&out.stdout), "wrote");
+    // Still one entry, still readable.
+    contains(&sandbox.ok(&["list"]), "Fixed by hand.");
+    // The journal keeps its backup, like every other write to it.
+    let backups = sandbox.dir.join(".tusk-backups");
+    assert!(backups.is_dir(), "the journal should have been backed up");
+}

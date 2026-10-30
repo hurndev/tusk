@@ -108,6 +108,38 @@ TUSK_EDITOR=builtin tusk new       # force the built-in editor back on
 
 `editor = "vim"` in the config file does the same thing permanently.
 
+### Editing any text file
+
+The built-in editor is not only for entries. `tusk open PATH` edits any text
+file, and `tusk open` with no path opens the journal file itself — as raw text,
+which is what you want when an entry needs fixing by hand.
+
+```sh
+tusk open ~/notes/todo.md          # edit a file
+tusk open ~/notes/tomorrow.md      # does not exist yet: type, Ctrl+S, it does
+tusk open                          # the journal file, headers and all
+```
+
+Everything the entry editor does works here: soft wrapping, `Ctrl+Z`/`Ctrl+Y`
+undo and redo, `Ctrl+K` and `Ctrl+W` to kill text, `Ctrl+A`/`Ctrl+E` for the ends
+of a line, `Ctrl+S` to save, and `F2` for spellchecking. The status bar shows the
+file name, the line and column, and whether the buffer differs from the disk.
+
+Files are written the way the journal is written — to a temporary file beside
+the original, then renamed over it — so a crash or a full disk cannot leave a
+half-written file. If the file already existed, its permissions are kept, and a
+symlink is written through rather than replaced. A file tusk creates ends with a
+newline; an existing file is written back exactly as it was, so trailing bytes
+stay where you left them.
+
+Two deliberate limits: tusk will not create a directory to put a file in (make
+the directory first), and it only edits UTF-8 text (a binary file is refused
+rather than mangled). Backups stay a journal thing — `.tusk-backups/` is written
+for the journal, not for every file you edit.
+
+`--external` and `--editor CMD` work here too, and hand the file straight to
+that editor instead of using the built-in one.
+
 ### Spellchecking
 
 Spellchecking is **off every time you start**, and tusk never remembers whether
@@ -261,7 +293,7 @@ tusk show latest            # also: oldest, first, last, newest
 | `search QUERY…` | `-r`, `-s`, `--any`, `--full`, `-c`, `-n N`, `-t TAG`, `--from`/`--to` |
 | `tags` | the tags you use, most used first |
 | `stats` | words, span, writing days, streaks, busiest month |
-| `open` | the raw journal file in your external editor |
+| `open [PATH]` | edit any text file in the editor; the journal file by default (alias `file`) |
 | `path` | print the journal file path in use |
 | `config show\|get\|set\|unset\|edit` | settings: `journal`, `editor`, `pager`, `prose_width`, `backup` |
 | `init` | choose the journal file and editor |
