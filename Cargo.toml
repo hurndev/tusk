@@ -15,6 +15,10 @@ exclude = ["/.github"]
 name = "tusk"
 path = "src/main.rs"
 
+[[bin]]
+name = "tuskedit"
+path = "src/bin/tuskedit.rs"
+
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

@@ -49,6 +49,18 @@ impl Config {
     }
 }
 
+/// A path with the home directory shortened to `~`, for titles and reports.
+pub fn display_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    if let Ok(home) = home_dir() {
+        let home = home.display().to_string();
+        if let Some(rest) = text.strip_prefix(&home) {
+            return format!("~{rest}");
+        }
+    }
+    text
+}
+
 pub fn config_path() -> Result<PathBuf> {
     if let Some(p) = env::var_os("TUSK_CONFIG").filter(|v| !v.is_empty()) {
         return Ok(PathBuf::from(p));

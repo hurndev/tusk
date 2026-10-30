@@ -13,6 +13,10 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_tusk")
 }
 
+fn edit_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_tuskedit")
+}
+
 struct Sandbox {
     dir: PathBuf,
     journal: PathBuf,
@@ -66,6 +70,19 @@ impl Sandbox {
             .env_remove("EDITOR")
             .env_remove("PAGER");
         command
+    }
+
+    /// Run the standalone editor command in the same sandbox.
+    fn run_edit(&self, args: &[&str]) -> Output {
+        let mut command = Command::new(edit_bin());
+        command
+            .args(args)
+            .env("TUSK_CONFIG", self.dir.join("config.toml"))
+            .env("TUSK_FILE", &self.journal)
+            .env("TUSK_JRNL_CONFIG", self.dir.join("absent-jrnl.yaml"))
+            .env("NO_COLOR", "1")
+            .env("COLUMNS", "200");
+        command.output().expect("run tuskedit")
     }
 
     fn run_configured(&self, args: &[&str]) -> Output {
@@ -730,47 +747,40 @@ fn creates_missing_parent_directories() {
 }
 
 #[test]
-fn open_edits_any_text_file() {
-    let sandbox = Sandbox::new("open-file");
-    let path = sandbox.dir.join("notes.md");
-    let path = path.to_str().unwrap();
-
-    // A file that does not exist yet is created by the editor.
-    let out = sandbox.run(&["open", path, "--editor", "printf 'first line\\n' >"]);
-    assert!(
-        out.status.success(),
-        "open failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    contains(&String::from_utf8_lossy(&out.stdout), "wrote");
-    contains(&String::from_utf8_lossy(&out.stdout), "1 line");
-    assert_eq!(
-        fs::read_to_string(path).unwrap(),
-        "first line\n",
-        "the file should hold exactly what the editor wrote"
-    );
-
-    // Running again with an editor that changes nothing reports as much.
-    let same = sandbox.run(&["open", path, "--editor", "true"]);
-    assert!(same.status.success());
-    contains(&String::from_utf8_lossy(&same.stdout), "unchanged");
-    assert_eq!(fs::read_to_string(path).unwrap(), "first line\n");
+fn tuskedit_names_the_file_it_wants() {
+    let sandbox = Sandbox::new("tuskedit-usage");
+    let out = sandbox.run_edit(&[]);
+    assert!(!out.status.success());
+    contains(&String::from_utf8_lossy(&out.stderr), "PATH");
 }
 
 #[test]
-fn open_refuses_what_it_cannot_edit() {
-    let sandbox = Sandbox::new("open-refusals");
+fn tuskedit_needs_a_terminal_and_writes_nothing_without_one() {
+    let sandbox = Sandbox::new("tuskedit-terminal");
+    let path = sandbox.dir.join("notes.md");
+
+    let out = sandbox.run_edit(&[path.to_str().unwrap()]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    contains(&stderr, "built-in editor needs a terminal");
+    contains(&stderr, "tuskedit");
+    assert!(!path.exists(), "nothing should have been written");
+}
+
+#[test]
+fn tuskedit_refuses_what_it_cannot_edit() {
+    let sandbox = Sandbox::new("tuskedit-refusals");
 
     // A directory is not a text file.
     let dir = sandbox.dir.join("folder");
     fs::create_dir_all(&dir).unwrap();
-    let out = sandbox.run(&["open", dir.to_str().unwrap(), "--editor", "true"]);
+    let out = sandbox.run_edit(&[dir.to_str().unwrap()]);
     assert!(!out.status.success());
     contains(&String::from_utf8_lossy(&out.stderr), "is a directory");
 
     // A file in a directory that does not exist: tusk will not invent the tree.
     let deep = sandbox.dir.join("missing").join("deep.md");
-    let out = sandbox.run(&["open", deep.to_str().unwrap(), "--editor", "true"]);
+    let out = sandbox.run_edit(&[deep.to_str().unwrap()]);
     assert!(!out.status.success());
     contains(&String::from_utf8_lossy(&out.stderr), "no such directory");
     assert!(!deep.exists(), "nothing should have been created");
@@ -778,51 +788,39 @@ fn open_refuses_what_it_cannot_edit() {
     // Binary files are out of scope.
     let binary = sandbox.dir.join("picture.bin");
     fs::write(&binary, b"abc\0def").unwrap();
-    let out = sandbox.run(&["open", binary.to_str().unwrap(), "--editor", "true"]);
+    let out = sandbox.run_edit(&[binary.to_str().unwrap()]);
     assert!(!out.status.success());
     contains(&String::from_utf8_lossy(&out.stderr), "binary");
     assert_eq!(fs::read(&binary).unwrap(), b"abc\0def", "left untouched");
 }
 
 #[test]
-fn open_hands_the_file_to_the_configured_editor() {
-    let sandbox = Sandbox::new("open-config");
-    let path = sandbox.dir.join("todo.txt");
-    sandbox.ok(&["config", "set", "editor", "printf 'from the config\\n' >"]);
-
-    let out = sandbox.run(&["open", path.to_str().unwrap()]);
-    assert!(
-        out.status.success(),
-        "open failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(fs::read_to_string(&path).unwrap(), "from the config\n");
-}
-
-#[test]
-fn opening_a_file_needs_a_terminal_for_the_built_in_editor() {
-    let sandbox = Sandbox::new("open-terminal");
+fn tuskedit_works_without_a_journal_configured() {
+    let sandbox = Sandbox::new("tuskedit-no-journal");
     let path = sandbox.dir.join("notes.md");
-    let out = sandbox.run(&["open", path.to_str().unwrap()]);
+    // No journal anywhere: the refusal is still about the terminal, not setup.
+    let out = sandbox.run_edit(&[path.to_str().unwrap()]);
     assert!(!out.status.success());
-    contains(
-        &String::from_utf8_lossy(&out.stderr),
-        "built-in editor needs a terminal",
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    contains(&stderr, "built-in editor needs a terminal");
+    assert!(
+        !stderr.contains("run `tusk init`"),
+        "no setup demands: {stderr}"
     );
-    assert!(!path.exists(), "nothing should have been written");
 }
 
 #[test]
-fn open_without_a_path_is_the_journal_itself() {
+fn opening_the_journal_hands_it_to_the_configured_editor() {
     let sandbox = Sandbox::new("open-journal");
     sandbox.add("2026-05-01 09:00", "A line to fix by hand.");
-
-    // The raw file, headers and all, goes to the editor.
-    let out = sandbox.run(&[
-        "open",
-        "--editor",
+    sandbox.ok(&[
+        "config",
+        "set",
+        "editor",
         "printf '[2026-05-01 09:00:00 AM] Fixed by hand.\\n' >",
     ]);
+
+    let out = sandbox.run(&["open"]);
     assert!(
         out.status.success(),
         "open failed: {}",
@@ -833,6 +831,18 @@ fn open_without_a_path_is_the_journal_itself() {
     // Still one entry, still readable.
     contains(&sandbox.ok(&["list"]), "Fixed by hand.");
     // The journal keeps its backup, like every other write to it.
-    let backups = sandbox.dir.join(".tusk-backups");
-    assert!(backups.is_dir(), "the journal should have been backed up");
+    assert!(
+        sandbox.dir.join(".tusk-backups").is_dir(),
+        "the journal should have been backed up"
+    );
+}
+
+#[test]
+fn open_takes_no_path_any_more() {
+    let sandbox = Sandbox::new("open-path");
+    let path = sandbox.dir.join("notes.md");
+    let out = sandbox.run(&["open", path.to_str().unwrap()]);
+    assert!(!out.status.success());
+    // Ordinary files are `tuskedit`'s job now, and clap says so.
+    contains(&String::from_utf8_lossy(&out.stderr), "unexpected argument");
 }

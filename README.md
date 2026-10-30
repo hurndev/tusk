@@ -11,6 +11,9 @@ gives the same wrapping back, with scrolling and search. No `vim`, no `less`, no
 database, no daemon, no lock-in — underneath it is still a file you could read
 with `cat`.
 
+The editor is not tied to the journal: `tuskedit notes.md` edits any text file
+with the same keys, wrapping and spellchecking. It is installed alongside `tusk`.
+
 ```
 $ tusk new
 ┌─ 76 columns of prose, centred, soft-wrapped ────────────────────────────────┐
@@ -31,7 +34,7 @@ Needs a recent stable Rust (2024 edition).
 ```sh
 git clone https://github.com/hurndev/tusk
 cd tusk
-cargo install --path .        # installs to ~/.cargo/bin/tusk
+cargo install --path .        # installs tusk and tuskedit
 ```
 
 Then set up once:
@@ -108,22 +111,21 @@ TUSK_EDITOR=builtin tusk new       # force the built-in editor back on
 
 `editor = "vim"` in the config file does the same thing permanently.
 
-### Editing any text file
+### Editing any text file: `tuskedit`
 
-The built-in editor is not only for entries. `tusk open PATH` edits any text
-file, and `tusk open` with no path opens the journal file itself — as raw text,
-which is what you want when an entry needs fixing by hand.
+The editor is its own command, so it works on anything:
 
 ```sh
-tusk open ~/notes/todo.md          # edit a file
-tusk open ~/notes/tomorrow.md      # does not exist yet: type, Ctrl+S, it does
-tusk open                          # the journal file, headers and all
+tuskedit ~/notes/todo.md       # edit a file
+tuskedit ~/notes/tomorrow.md   # does not exist yet: type, Ctrl+S, it does
+tusk open                      # the journal file itself, headers and all
 ```
 
 Everything the entry editor does works here: soft wrapping, `Ctrl+Z`/`Ctrl+Y`
 undo and redo, `Ctrl+K` and `Ctrl+W` to kill text, `Ctrl+A`/`Ctrl+E` for the ends
 of a line, `Ctrl+S` to save, and `F2` for spellchecking. The status bar shows the
 file name, the line and column, and whether the buffer differs from the disk.
+`tuskedit` is immune to `editor = "vim"` in the config — it *is* tusk's editor.
 
 Files are written the way the journal is written — to a temporary file beside
 the original, then renamed over it — so a crash or a full disk cannot leave a
@@ -132,13 +134,14 @@ symlink is written through rather than replaced. A file tusk creates ends with a
 newline; an existing file is written back exactly as it was, so trailing bytes
 stay where you left them.
 
-Two deliberate limits: tusk will not create a directory to put a file in (make
-the directory first), and it only edits UTF-8 text (a binary file is refused
-rather than mangled). Backups stay a journal thing — `.tusk-backups/` is written
-for the journal, not for every file you edit.
+Two deliberate limits: `tuskedit` will not create a directory to put a file in
+(make the directory first), and it only edits UTF-8 text (a binary file is
+refused rather than mangled). Backups stay a journal thing: `.tusk-backups/` is
+written when the file you edit *is* the journal, not for every file.
 
-`--external` and `--editor CMD` work here too, and hand the file straight to
-that editor instead of using the built-in one.
+`tusk open` remains the journal-specific one: the whole file as raw text, in
+whichever editor your config names, which is what you want when an entry needs
+fixing by hand.
 
 ### Spellchecking
 
@@ -293,13 +296,17 @@ tusk show latest            # also: oldest, first, last, newest
 | `search QUERY…` | `-r`, `-s`, `--any`, `--full`, `-c`, `-n N`, `-t TAG`, `--from`/`--to` |
 | `tags` | the tags you use, most used first |
 | `stats` | words, span, writing days, streaks, busiest month |
-| `open [PATH]` | edit any text file in the editor; the journal file by default (alias `file`) |
+| `open` | the whole journal file in your editor, for fixing by hand |
 | `path` | print the journal file path in use |
 | `config show\|get\|set\|unset\|edit` | settings: `journal`, `editor`, `pager`, `prose_width`, `backup` |
 | `init` | choose the journal file and editor |
 
 Most commands take `--from`, `--to`, `--tag` and `--reverse` to narrow what they
 look at, and `--file PATH` works anywhere to point at another journal.
+
+There is one more command in the package: `tuskedit PATH` — the same editor,
+standing on its own, for any text file. See
+[Editing any text file](#editing-any-text-file-tuskedit).
 
 ## The file format
 

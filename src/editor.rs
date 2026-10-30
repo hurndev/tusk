@@ -269,3 +269,29 @@ pub fn write_stdout(text: &str) {
     let _ = out.write_all(text.as_bytes());
     let _ = out.flush();
 }
+
+/// Pick the editor, and refuse politely when the built-in one has no terminal
+/// to draw in. A configured external editor is used instead; an explicit
+/// request for the built-in editor is never quietly swapped out.
+pub fn resolve_choice(
+    flags: &crate::cli::EditorOpts,
+    cfg: &Config,
+    hint: &str,
+) -> Result<EditorChoice> {
+    let choice = choose(flags, cfg);
+    if crate::ui::frame::interactive() {
+        return Ok(choice);
+    }
+    match choice {
+        EditorChoice::Builtin => match explicit_editor_command(cfg) {
+            Some(command) => Ok(EditorChoice::External(command)),
+            None => bail!("the built-in editor needs a terminal\n  {hint}"),
+        },
+        EditorChoice::BuiltinRequested => bail!(
+            "the built-in editor needs a terminal, and tusk was told to use it\n  \
+             (config `editor`, $TUSK_EDITOR, --builtin or --editor builtin)\n  \
+             name an external editor instead, or {hint}"
+        ),
+        other => Ok(other),
+    }
+}

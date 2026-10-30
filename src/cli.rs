@@ -71,13 +71,11 @@ pub enum Command {
     /// Summarise the journal: counts, span, streaks, busiest months.
     Stats(StatsArgs),
 
-    /// Edit any text file in your editor — the journal by default.
+    /// Open the journal file itself in your editor.
     ///
-    /// Pass a path to edit an ordinary text file, or a path that does not
-    /// exist yet to start a new one. With no path, tusk opens the journal
-    /// file itself, as raw text.
-    #[command(visible_alias = "file")]
-    Open(OpenArgs),
+    /// The whole file, as raw text — the way to fix an entry by hand.
+    /// `tuskedit PATH` edits ordinary text files with the same editor.
+    Open,
 
     /// Print the journal file path in use.
     Path,
@@ -88,16 +86,6 @@ pub enum Command {
 
     /// Set up tusk: choose the journal file and editor.
     Init(InitArgs),
-}
-
-#[derive(Args, Debug)]
-pub struct OpenArgs {
-    /// The file to edit. Defaults to the journal itself.
-    #[arg(value_name = "PATH", conflicts_with = "file")]
-    pub path: Option<PathBuf>,
-
-    #[command(flatten)]
-    pub editor: EditorOpts,
 }
 
 /// Which editor to compose in. Flattened into the commands that write.

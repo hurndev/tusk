@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime};
@@ -13,6 +13,7 @@ use crate::buffer::Buffer;
 use crate::cli::*;
 use crate::config::{self, Config};
 use crate::editor::{self, EditorChoice};
+use crate::fileedit;
 use crate::journal::{self, Entry, Journal};
 use crate::query::{Filters, Query};
 use crate::render::{self, note, say};
@@ -42,7 +43,7 @@ pub fn run(mut cli: Cli) -> Result<()> {
         Some(Command::Search(args)) => cmd_search(&cli, &cfg, &paint, &args),
         Some(Command::Tags(args)) => cmd_tags(&cli, &cfg, &paint, &args),
         Some(Command::Stats(args)) => cmd_stats(&cli, &cfg, &paint, &args),
-        Some(Command::Open(args)) => cmd_open(&cli, &cfg, &paint, &args),
+        Some(Command::Open) => cmd_open(&cli, &cfg, &paint),
         Some(Command::Path) => cmd_path(&cli, &cfg),
         Some(Command::Config(args)) => cmd_config(&cli, &cfg, &paint, &args),
         Some(Command::Init(args)) => cmd_init(&cfg, &paint, &args),
@@ -50,28 +51,6 @@ pub fn run(mut cli: Cli) -> Result<()> {
 }
 
 // ---------------------------------------------------------------- helpers
-
-/// Pick the editor, and refuse politely when the built-in one has no terminal
-/// to draw in. A configured external editor is used instead; an explicit
-/// request for the built-in editor is never quietly swapped out.
-fn choose_editor(flags: &EditorOpts, cfg: &Config, hint: &str) -> Result<EditorChoice> {
-    let choice = editor::choose(flags, cfg);
-    if ui::frame::interactive() {
-        return Ok(choice);
-    }
-    match choice {
-        EditorChoice::Builtin => match editor::explicit_editor_command(cfg) {
-            Some(command) => Ok(EditorChoice::External(command)),
-            None => bail!("the built-in editor needs a terminal\n  {hint}"),
-        },
-        EditorChoice::BuiltinRequested => bail!(
-            "the built-in editor needs a terminal, and tusk was told to use it\n  \
-             (config `editor`, $TUSK_EDITOR, --builtin or --editor builtin)\n  \
-             name an external editor instead, or {hint}"
-        ),
-        other => Ok(other),
-    }
-}
 
 fn open_journal(cli: &Cli, cfg: &Config) -> Result<Journal> {
     let path = config::resolve_path(cli.file.as_deref(), cfg)?;
@@ -424,7 +403,7 @@ fn cmd_read(cli: &Cli, cfg: &Config, args: &ReadArgs) -> Result<()> {
     loop {
         let doc = build_doc(&journal, &indices);
         let options = ui::reader::ReaderOptions {
-            title: format!("tusk read · {}", display_path(&journal.path)),
+            title: format!("tusk read · {}", config::display_path(&journal.path)),
             prose_width: width,
             follow_entry: follow,
         };
@@ -498,18 +477,6 @@ fn plain_prose(journal: &Journal, indices: &[usize], width: usize, paint: &Paint
         ));
     }
     out
-}
-
-/// Shorten a path for a footer by replacing the home directory with `~`.
-fn display_path(path: &Path) -> String {
-    let text = path.display().to_string();
-    if let Ok(home) = config::home_dir() {
-        let home = home.display().to_string();
-        if let Some(rest) = text.strip_prefix(&home) {
-            return format!("~{rest}");
-        }
-    }
-    text
 }
 
 fn cmd_edit(cli: &Cli, cfg: &Config, paint: &Paint, args: &EditArgs) -> Result<()> {
@@ -586,7 +553,7 @@ fn compose(
         Some(index) => journal.entries[index].body.clone(),
         None => String::new(),
     };
-    let choice = choose_editor(
+    let choice = editor::resolve_choice(
         draft.editor,
         cfg,
         "run `tusk new` in a terminal, pipe the text in (`something | tusk new`),\n  \
@@ -980,193 +947,19 @@ fn cmd_stats(cli: &Cli, cfg: &Config, paint: &Paint, args: &StatsArgs) -> Result
     Ok(())
 }
 
-/// `tusk open [PATH]` — the built-in editor, pointed at any text file.
+/// `tusk open` — the journal file itself, as raw text, in your editor.
 ///
-/// With no path this is the journal file itself, as raw text, which is what
-/// you want when an entry needs fixing by hand. With a path it is an ordinary
-/// file: created on the first save if it does not exist yet.
-fn cmd_open(cli: &Cli, cfg: &Config, paint: &Paint, args: &OpenArgs) -> Result<()> {
-    let journal_path = config::resolve_path(cli.file.as_deref(), cfg)?;
-    let path = match &args.path {
-        Some(path) => config::expand(path),
-        None => journal_path.clone(),
+/// This is the way to fix an entry by hand: headers, blank lines and all are
+/// yours to change. Ordinary text files are `tuskedit`'s job.
+fn cmd_open(cli: &Cli, cfg: &Config, paint: &Paint) -> Result<()> {
+    let path = config::resolve_path(cli.file.as_deref(), cfg)?;
+    let options = fileedit::Options {
+        program: "tusk",
+        no_backup: cli.no_backup,
+        journal: Some(&path),
+        editor: fileedit::Pick::Configured(&EditorOpts::default()),
     };
-    // The journal keeps its backups; any other file is just a file.
-    let is_journal = same_file(&path, &journal_path);
-    let label = display_path(&path);
-
-    let exists = match fs::metadata(&path) {
-        Ok(meta) if meta.is_dir() => bail!("{label} is a directory, not a file"),
-        Ok(_) => true,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-        Err(err) => return Err(err).with_context(|| format!("cannot read {label}")),
-    };
-    if !exists {
-        // tusk will make the file, but not a directory tree behind your back.
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        if !parent.is_dir() {
-            bail!(
-                "no such directory: {}\n  \
-                 create it first, or name a file that already has a home",
-                display_path(parent)
-            );
-        }
-    }
-    // Write through a symlink instead of replacing it with a regular file.
-    let target = if exists {
-        fs::canonicalize(&path).unwrap_or_else(|_| path.clone())
-    } else {
-        path.clone()
-    };
-    let text = if exists {
-        fs::read_to_string(&target)
-            .with_context(|| format!("cannot read {label} (tusk edits UTF-8 text files)"))?
-    } else {
-        String::new()
-    };
-    if text.contains('\0') {
-        bail!("{label} looks like a binary file; tusk only edits text");
-    }
-
-    let command = choose_editor(
-        &args.editor,
-        cfg,
-        &format!("run `tusk open {label}` in a terminal, or name an editor with `--editor`"),
-    )?;
-
-    match command {
-        // An external editor edits the file where it lies; nothing to shuttle.
-        EditorChoice::External(command) => {
-            if is_journal && !cli.no_backup {
-                // The editor writes the file itself, so the copy has to be
-                // taken before it starts rather than before a save.
-                back_up(&target, paint);
-            }
-            if !exists {
-                write_text_atomic(&target, "")?;
-            }
-            let before = fs::read(&target).ok();
-            editor::run_editor(&target, &command)?;
-            let after = fs::read(&target).ok();
-            if before == after {
-                say(&paint.dim(&format!("tusk: {label} unchanged")));
-            } else {
-                report_file(&target, &label, paint, "wrote")?;
-            }
-            Ok(())
-        }
-        EditorChoice::Builtin | EditorChoice::BuiltinRequested => {
-            let title = if exists {
-                label.clone()
-            } else {
-                format!("{label}  ·  new file")
-            };
-            let options = ui::editor::EditorOptions {
-                title,
-                prose_width: cfg.prose_width(),
-            };
-            // A file tusk creates ends with a newline, as text files should.
-            let new_file = !exists;
-            let mut buffer = Buffer::new(&text);
-            let mut spell = ui::spell::Spell::new(cfg);
-            let mut saved: Option<(usize, usize)> = None;
-            {
-                let mut saver = |text: &str| -> Result<()> {
-                    let body = finalise(text, new_file);
-                    if is_journal && !cli.no_backup {
-                        back_up(&target, paint);
-                    }
-                    write_text_atomic(&target, &body)?;
-                    saved = Some((body.lines().count(), body.split_whitespace().count()));
-                    Ok(())
-                };
-                ui::editor::run(&mut buffer, &options, paint, &mut saver, &mut spell)?;
-            }
-            match (saved, buffer.is_dirty()) {
-                (Some((lines, words)), _) => say(&format!(
-                    "{} {} {} ({}, {})",
-                    paint.ok("✓"),
-                    paint.bold("wrote"),
-                    label,
-                    count(lines, "line"),
-                    count(words, "word")
-                )),
-                (None, true) => say(&paint.dim("tusk: nothing written")),
-                (None, false) => say(&paint.dim(&format!("tusk: {label} unchanged"))),
-            }
-            Ok(())
-        }
-    }
-}
-
-/// Report a file an external editor just changed.
-fn report_file(path: &Path, label: &str, paint: &Paint, verb: &str) -> Result<()> {
-    let text = fs::read_to_string(path).unwrap_or_default();
-    say(&format!(
-        "{} {} {} ({}, {})",
-        paint.ok("✓"),
-        paint.bold(verb),
-        label,
-        count(text.lines().count(), "line"),
-        count(text.split_whitespace().count(), "word")
-    ));
-    Ok(())
-}
-
-fn count(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{n} {noun}s")
-    }
-}
-
-/// Text is written as typed, except that a file tusk created ends with a
-/// newline rather than stopping mid-line.
-fn finalise(text: &str, new_file: bool) -> String {
-    if new_file && !text.is_empty() && !text.ends_with('\n') {
-        format!("{text}\n")
-    } else {
-        text.to_string()
-    }
-}
-
-/// Write a text file the way the journal is written: to a sibling temporary
-/// file, then rename over the original, so a crash cannot leave half a file.
-/// Permissions of the file being replaced are carried over.
-fn write_text_atomic(path: &Path, text: &str) -> Result<()> {
-    let tmp = journal::temp_sibling(path);
-    let outcome = (|| -> Result<()> {
-        fs::write(&tmp, text).with_context(|| format!("cannot write {}", tmp.display()))?;
-        if let Ok(meta) = fs::metadata(path) {
-            let _ = fs::set_permissions(&tmp, meta.permissions());
-        }
-        fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))?;
-        Ok(())
-    })();
-    if outcome.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    outcome
-}
-
-/// Keep a copy of the journal before it changes; a failure is a warning, not
-/// a reason to lose the edit.
-fn back_up(path: &Path, paint: &Paint) {
-    if let Err(err) = journal::backup_file(path) {
-        note(&paint.warn(&format!("tusk: warning: could not back up: {err:#}")));
-    }
-}
-
-/// Whether two paths name the same file, following symlinks when they can.
-fn same_file(a: &Path, b: &Path) -> bool {
-    match (fs::canonicalize(a), fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b.to_path_buf(),
-    }
+    fileedit::edit(&path, cfg, paint, &options)
 }
 
 fn cmd_path(cli: &Cli, cfg: &Config) -> Result<()> {
@@ -1520,39 +1313,6 @@ fn thousands(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_file_tusk_creates_ends_with_a_newline() {
-        assert_eq!(finalise("hello", true), "hello\n");
-        assert_eq!(finalise("hello\n", true), "hello\n");
-        assert_eq!(finalise("", true), "");
-        // An existing file is written back exactly as it was seen.
-        assert_eq!(finalise("hello", false), "hello");
-        assert_eq!(finalise("hello\n", false), "hello\n");
-    }
-
-    #[test]
-    fn the_journal_is_recognised_through_a_symlink() {
-        let dir = std::env::temp_dir().join(format!("tusk-same-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("journal.txt");
-        fs::write(&file, "").unwrap();
-        let link = dir.join("link.txt");
-        let _ = fs::remove_file(&link);
-        std::os::unix::fs::symlink(&file, &link).unwrap();
-
-        assert!(same_file(&file, &file));
-        assert!(same_file(&link, &file), "a symlink is the same file");
-        assert!(!same_file(&file, &dir.join("other.txt")));
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn counts_read_naturally() {
-        assert_eq!(count(0, "line"), "0 lines");
-        assert_eq!(count(1, "line"), "1 line");
-        assert_eq!(count(2, "word"), "2 words");
-    }
 
     #[test]
     fn formats_thousands() {

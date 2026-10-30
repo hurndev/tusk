@@ -1,28 +1,12 @@
-//! tusk — a small, sharp CLI journal for plain prose.
-//!
-//! Entries live in one plain-text file and are stored in the widely used
-//! `[YYYY-MM-DD HH:MM:SS AM] body` layout (the same format used by `jrnl`),
-//! so the file stays greppable, syncable and readable with any other tool.
+//! The `tusk` command: everything the journal does.
 
-mod buffer;
-mod cli;
-mod cmd;
-mod config;
-mod editor;
-mod journal;
-mod query;
-mod render;
-mod spell;
-mod style;
-mod text;
-mod ui;
+use std::process::ExitCode;
 
 use clap::Parser;
 
-fn main() {
-    let cli = cli::Cli::parse();
-    if let Err(err) = cmd::run(cli) {
-        render::note(&format!("tusk: {err:#}"));
-        std::process::exit(1);
-    }
+use tusk::cli::Cli;
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    tusk::finish("tusk", tusk::cmd::run(cli))
 }
